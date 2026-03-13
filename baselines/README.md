@@ -115,7 +115,7 @@ All baselines save predictions as `.pt` files via `save_predictions()`:
 
 ## Notes
 
-- **Model checkpoints** are not included in this repository. Train from scratch using the provided scripts, or download pre-trained weights from the original baseline repositories.
+- **Model checkpoints** are not included in this repository. Train from scratch using the provided scripts, or download pre-trained weights from the original baseline repositories. You may also contact us if you need the pre-trained checkpoints on the chimera-bench dataset.
 - **WandB logging** is enabled by default (project: `chimera_baselines`). Use `--no-wandb` to disable.
-- **Early stopping patience** is standardized to 10 epochs across all baselines.
-- Baselines not included (no CHIMERA integration yet): AbX, AbEgDiffuser, LEAD, IgGM, DiffAbXL, AbSGM, ProteinMPNN.
+- **Early stopping patience** on the validation loss is standardized to 10 epochs across all baselines.
+
