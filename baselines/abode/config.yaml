@@ -1,0 +1,42 @@
+# AbODE CHIMERA-Bench configuration
+# Paths inherited from ../shared_config.yaml (data_root, results_root, trans_baselines)
+
+# Dataset
+dataset:
+  split: epitope_group  # epitope_group | antigen_fold | temporal
+  cdr_type: "3"  # 1 | 2 | 3
+
+# Model (Adobe_cond hyperparameters)
+model:
+  c_in: 30   # 1 time + 20 AA one-hot + 9 coordinate
+  c_out: 29  # 20 AA logits + 9 coordinate
+
+# Training
+training:
+  seed: 10
+  gpu: 0
+  lr: 1.0e-3
+  weight_decay: 1.0e-3
+  max_epoch: 100
+  grad_clip: 0.0
+  mask: 0  # antigen masking percentage (0 = no masking)
+
+# ODE solver
+ode:
+  solver: adaptive_heun
+  rtol: 0.5
+  atol: 0.5
+  t_nsamples: 200
+
+# Callbacks
+callbacks:
+  early_stopping:
+    patience: 10
+    mode: min
+  checkpoint:
+    mode: min
+
+# WandB
+wandb:
+  enabled: false
+  project: chimera_baselines

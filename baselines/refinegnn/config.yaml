@@ -1,0 +1,44 @@
+# RefineGNN CHIMERA-Bench configuration
+# Paths inherited from ../shared_config.yaml (data_root, results_root, trans_baselines)
+
+# Dataset
+dataset:
+  split: epitope_group  # epitope_group | antigen_fold | temporal
+  cdr_type: "3"  # 1 | 2 | 3
+
+# CDR numbering scheme used by this baseline (chothia or imgt)
+numbering_scheme: chothia
+
+# Model (original RefineGNN hyperparameters from ab_train.py)
+model:
+  hidden_size: 256
+  depth: 4
+  k_neighbors: 9
+  block_size: 8
+  vocab_size: 21
+  num_rbf: 16
+  update_freq: 1
+  dropout: 0.1
+
+# Training
+training:
+  seed: 7
+  gpu: 0
+  lr: 1.0e-3
+  clip_norm: 5.0
+  batch_tokens: 100
+  max_epoch: 10
+  anneal_rate: 0.9
+
+# Callbacks
+callbacks:
+  early_stopping:
+    patience: 10
+    mode: min
+  checkpoint:
+    mode: min
+
+# WandB
+wandb:
+  enabled: false
+  project: chimera_baselines

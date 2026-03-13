@@ -1,0 +1,30 @@
+# CHIMERA-Bench requirements
+# Install PyTorch first: https://pytorch.org/get-started/locally/
+#   pip install torch==2.2.0 torchvision==0.17.0 torchaudio==2.2.0 --index-url https://download.pytorch.org/whl/cu121
+# Install PyTorch Geometric: https://pytorch-geometric.readthedocs.io/en/latest/install/installation.html
+#   pip install torch_geometric torch_scatter torch_sparse torch_cluster torch_spline_conv
+
+# Core
+numpy>=1.24.0,<2.0
+scipy>=1.10.0
+pandas>=2.0.0
+scikit-learn>=1.3.0
+matplotlib>=3.7.0
+
+# Bioinformatics
+biopython>=1.81
+
+# Protein tools
+fair-esm>=2.0.0
+antiberty
+DockQ
+
+# ML utilities
+wandb
+hydra-core>=1.3.0
+easydict
+lmdb
+loguru
+einops
+tqdm>=4.65.0
+requests>=2.31.0

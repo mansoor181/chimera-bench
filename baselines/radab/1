@@ -1,0 +1,6 @@
+nohup: ignoring input
+usage: chimera_trainer.py [-h] [--split {epitope_group,antigen_fold,temporal}]
+                          [--gpu GPU] [--seed SEED] [--max_iters MAX_ITERS]
+                          [--batch_size BATCH_SIZE] [--no-wandb] [--test_only]
+                          [--checkpoint CHECKPOINT]
+chimera_trainer.py: error: unrecognized arguments: 2

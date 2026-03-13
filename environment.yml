@@ -1,0 +1,25 @@
+name: chimera-bench
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+
+dependencies:
+  - python=3.10
+  - pip
+
+  # Core scientific computing
+  - numpy>=1.24.0,<2.0
+  - scipy>=1.10.0
+  - pandas>=2.0.0
+  - scikit-learn>=1.3.0
+  - matplotlib>=3.7.0
+
+  # Bioinformatics (conda/bioconda only)
+  - biopython>=1.81
+  - mmseqs2
+  - hmmer
+
+  # Utilities
+  - tqdm>=4.65.0
+  - requests>=2.31.0

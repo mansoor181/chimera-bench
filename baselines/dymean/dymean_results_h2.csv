@@ -1,0 +1,3 @@
+baseline,split,cdr_type,aar,caar,ppl,rmsd,tm_score,fnat,irmsd,dockq,epitope_f1,n_liabilities,chimera_s,chimera_b
+dymean,epitope_group,H2,0.59±0.22,0.38±0.37,1.62±0.29,1.10±0.29,0.27±0.09,0.02±0.03,3.86±2.93,0.42±0.13,0.11±0.13,0.44±0.59,0.44±0.05,0.06±0.07
+dymean,antigen_fold,H2,0.58±0.20,0.37±0.38,1.73±0.24,1.11±0.39,0.27±0.09,0.02±0.04,3.97±2.94,0.41±0.13,0.12±0.15,0.78±0.71,0.43±0.05,0.07±0.09

@@ -1,0 +1,6 @@
+*.pyc
+backup.py
+new.py
+/scripts/
+/results/
+/outputs/

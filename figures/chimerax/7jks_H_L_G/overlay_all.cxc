@@ -1,0 +1,66 @@
+# ChimeraX script: 7jks_H_L_G - All methods overlaid on native CDR-H3
+
+# Open full complex
+open 7jks.pdb
+color #1 gray
+cartoon style #1 width 1.0
+hide #1 atoms
+color #1/H lightsteelblue
+color #1/L lightsalmon
+surface #1/G
+transparency #1/G 70
+color #1/G surfaces lightgray
+
+# Open native CDR-H3
+open native_H3.pdb
+color #2 black
+style #2 stick
+size #2 stickRadius 0.5
+
+# raad (AAR=0.36, RMSD=1.6A)
+open pred_raad_H3.pdb
+color #3 #4878CF
+style #3 stick
+size #3 stickRadius 0.3
+
+# dymean (AAR=0.36, RMSD=1.7A)
+open pred_dymean_H3.pdb
+color #4 #77BEDB
+style #4 stick
+size #4 stickRadius 0.3
+
+# diffab (AAR=0.17, RMSD=2.5A)
+open pred_diffab_H3.pdb
+color #5 #D65F5F
+style #5 stick
+size #5 stickRadius 0.3
+
+# abflownet (AAR=0.17, RMSD=2.1A)
+open pred_abflownet_H3.pdb
+color #6 #E07B39
+style #6 stick
+size #6 stickRadius 0.3
+
+# dyab (AAR=0.36, RMSD=5.3A)
+open pred_dyab_H3.pdb
+color #7 #6ACC65
+style #7 stick
+size #7 stickRadius 0.3
+
+# refinegnn (AAR=0.25, RMSD=2.3A)
+open pred_refinegnn_H3.pdb
+color #8 #B47CC7
+style #8 stick
+size #8 stickRadius 0.3
+
+# abode (AAR=0.29, RMSD=0.6A)
+open pred_abode_H3.pdb
+color #9 #3B8837
+style #9 stick
+size #9 stickRadius 0.3
+
+# View and save
+view #2-9
+zoom 0.8
+set bgColor white
+save all_methods_overlay.png width 1600 height 1200 supersample 3

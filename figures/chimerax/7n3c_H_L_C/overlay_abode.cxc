@@ -1,0 +1,47 @@
+# ChimeraX script: 7n3c_H_L_C - abode vs native CDR-H3
+# AAR=0.158, RMSD=0.66A
+# Native: ARLSVRVWFGELPHYGMDV
+# Predicted: ARGYYYYYYYYYYYYYYYD
+
+# Open full complex
+open 7n3c.pdb
+
+# Style: full complex as gray cartoon
+color #1 gray
+cartoon style #1 width 1.0
+hide #1 atoms
+
+# Color antibody chains
+color #1/H lightsteelblue
+color #1/L lightsalmon
+
+# Highlight antigen surface (transparent)
+surface #1/C
+transparency #1/C 70
+color #1/C surfaces lightgray
+
+# Open native CDR-H3 (blue tube)
+open native_H3.pdb
+color #2 cornflowerblue
+style #2 stick
+size #2 stickRadius 0.4
+
+# Open predicted CDR-H3 (colored by deviation in B-factor)
+open pred_abode_H3.pdb
+color bfactor #3 palette blue:white:red range 0,5
+style #3 stick
+size #3 stickRadius 0.4
+
+# Labels
+2dlabels create title text "abode (AAR=0.16, RMSD=0.7A)" \
+    xpos 0.02 ypos 0.95 color black size 18
+
+# View: zoom to CDR-H3 region
+view #2,3
+zoom 0.8
+
+# Background
+set bgColor white
+
+# Save image
+save abode_overlay.png width 1200 height 900 supersample 3

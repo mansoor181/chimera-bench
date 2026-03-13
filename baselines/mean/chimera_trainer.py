@@ -1,0 +1,426 @@
+"""CHIMERA trainer for MEAN baseline.
+
+Loads pre-cached dataset, splits by CHIMERA split IDs, trains with MEAN
+hyperparameters from config.yaml. Computes CHIMERA metrics on val/test sets
+and logs to wandb. MEAN generates one CDR at a time (H1, H2, or H3).
+
+Usage:
+    cd baselines/mean
+    python chimera_trainer.py
+    python chimera_trainer.py --split temporal --cdr_type 1
+"""
+
+import argparse
+import csv
+import json
+import os
+import sys
+import time
+from types import SimpleNamespace
+
+import numpy as np
+import torch
+import yaml
+from torch.utils.data import DataLoader
+from tqdm import tqdm
+
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _SCRIPT_DIR)
+
+from data import EquiAACDataset
+from data.pdb_utils import AAComplex, Protein
+from models.MCAttGNN import EfficientMCAttModel
+from utils.logger import print_log
+
+sys.path.insert(0, os.path.join(_SCRIPT_DIR, ".."))
+from chimera_utils import (
+    load_shared_config, load_split_ids, split_dataset, DatasetView,
+    EarlyStopping, ModelCheckpoint,
+    setup_wandb, seed_everything, to_device, save_predictions,
+)
+
+# CHIMERA evaluation metrics
+sys.path.insert(0, os.path.join(_SCRIPT_DIR, "..", ".."))
+from benchmark.evaluation.metrics import (
+    aar as chimera_aar, kabsch_rmsd, tm_score as chimera_tm_score,
+    count_liabilities,
+)
+
+METRIC_KEYS = ["ppl", "aar", "rmsd", "tm_score", "n_liabilities"]
+
+
+class RobustEquiAACDataset(EquiAACDataset):
+    """EquiAACDataset that skips PDBs that fail parsing."""
+
+    def preprocess(self, file_path, save_dir, num_entry_per_file):
+        with open(file_path, "r") as fin:
+            lines = fin.read().strip().split("\n")
+        for line in tqdm(lines, desc="Preprocessing"):
+            item = json.loads(line)
+            try:
+                protein = Protein.from_pdb(item["pdb_data_path"])
+            except Exception as e:
+                print_log(f'parse {item["pdb"]} failed: {e}, skip', level="ERROR")
+                continue
+            pdb_id, peptides = item["pdb"], protein.peptides
+            try:
+                self.data.append(AAComplex(
+                    pdb_id, peptides, item["heavy_chain"],
+                    item["light_chain"], item["antigen_chains"]))
+            except Exception as e:
+                print_log(f'AAComplex {pdb_id} failed: {e}, skip', level="ERROR")
+                continue
+            if num_entry_per_file > 0 and len(self.data) >= num_entry_per_file:
+                self._save_part(save_dir, num_entry_per_file)
+        if len(self.data):
+            self._save_part(save_dir, num_entry_per_file)
+
+
+def load_config():
+    """Load baseline config.yaml from script directory, merged with shared config."""
+    config_path = os.path.join(_SCRIPT_DIR, "config.yaml")
+    with open(config_path, "r") as f:
+        cfg = yaml.safe_load(f)
+    shared = load_shared_config()
+    return cfg, shared
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="MEAN CHIMERA trainer")
+    # CLI overrides for common fields
+    parser.add_argument("--split", type=str, default=None,
+                        choices=["epitope_group", "antigen_fold", "temporal"])
+    parser.add_argument("--cdr_type", type=str, default=None, choices=["1", "2", "3"])
+    parser.add_argument("--gpu", type=int, default=None)
+    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--lr", type=float, default=None)
+    parser.add_argument("--batch_size", type=int, default=None)
+    parser.add_argument("--max_epoch", type=int, default=None)
+    parser.add_argument("--no-wandb", action="store_true", help="Disable wandb logging")
+    return parser.parse_args()
+
+
+def build_config(cfg, shared, args):
+    """Build flat config namespace from YAML + shared config + CLI overrides."""
+    ds = cfg.get("dataset", {})
+    model = cfg.get("model", {})
+    training = cfg.get("training", {})
+    callbacks = cfg.get("callbacks", {})
+    wandb_cfg = cfg.get("wandb", {})
+    paths = shared["paths"]
+
+    ns = SimpleNamespace(
+        # Paths (from shared config)
+        data_root=paths["data_root"],
+        data_dir=os.path.join(paths["trans_baselines"], "mean"),
+        output_dir=os.path.join(paths["results_root"], "mean"),
+        # Dataset
+        split=ds.get("split", "epitope_group"),
+        cdr_type=str(ds.get("cdr_type", "3")),
+        # Model
+        embed_size=model.get("embed_size", 64),
+        hidden_size=model.get("hidden_size", 128),
+        n_layers=model.get("n_layers", 3),
+        n_iter=model.get("n_iter", 5),
+        alpha=model.get("alpha", 0.05),
+        n_channel=model.get("n_channel", 4),
+        mode=str(model.get("mode", "111")),
+        # Training
+        seed=training.get("seed", 42),
+        gpu=training.get("gpu", 0),
+        lr=training.get("lr", 1e-3),
+        batch_size=training.get("batch_size", 16),
+        max_epoch=training.get("max_epoch", 20),
+        anneal_base=training.get("anneal_base", 1.0),
+        grad_clip=training.get("grad_clip", 1.0),
+        num_workers=training.get("num_workers", 4),
+        # Callbacks
+        patience=callbacks.get("early_stopping", {}).get("patience", 10),
+        es_mode=callbacks.get("early_stopping", {}).get("mode", "min"),
+        ckpt_mode=callbacks.get("checkpoint", {}).get("mode", "min"),
+        # WandB
+        use_wandb=wandb_cfg.get("enabled", False),
+        wandb_project=wandb_cfg.get("project", "chimera_baselines"),
+    )
+
+    # CLI overrides
+    if args.split is not None:
+        ns.split = args.split
+    if args.cdr_type is not None:
+        ns.cdr_type = args.cdr_type
+    if args.gpu is not None:
+        ns.gpu = args.gpu
+    if args.seed is not None:
+        ns.seed = args.seed
+    if args.lr is not None:
+        ns.lr = args.lr
+    if args.batch_size is not None:
+        ns.batch_size = args.batch_size
+    if args.max_epoch is not None:
+        ns.max_epoch = args.max_epoch
+    if not args.no_wandb:
+        ns.use_wandb = True
+
+    return ns
+
+
+def train_epoch(model, loader, optimizer, device, grad_clip):
+    model.train()
+    losses, snlls, closses = [], [], []
+    for batch in tqdm(loader, desc="Train"):
+        batch = to_device(batch, device)
+        loss, snll, closs = model(batch["X"], batch["S"], batch["L"], batch["offsets"])
+        optimizer.zero_grad()
+        loss.backward()
+        if grad_clip > 0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+        optimizer.step()
+        losses.append(loss.item())
+        snlls.append(snll.item())
+        closses.append(closs.item())
+    return np.mean(losses), np.mean(snlls), np.mean(closses)
+
+
+def valid_epoch(model, loader, device):
+    model.eval()
+    losses, snlls, closses = [], [], []
+    with torch.no_grad():
+        for batch in tqdm(loader, desc="Val"):
+            batch = to_device(batch, device)
+            loss, snll, closs = model(batch["X"], batch["S"], batch["L"], batch["offsets"])
+            losses.append(loss.item())
+            snlls.append(snll.item())
+            closses.append(closs.item())
+    return np.mean(losses), np.mean(snlls), np.mean(closses)
+
+
+def run_inference_with_metrics(model, dataset, loader, device, cdr_type, idx_to_cid):
+    """Run inference and compute CHIMERA metrics per complex.
+
+    Uses idx_to_cid (list indexed by full dataset position) to resolve
+    dataset index -> chimera complex_id.
+
+    Returns:
+        predictions: list of per-complex prediction dicts
+        summary: dict of mean metric values
+    """
+    model.eval()
+    predictions = []
+    all_metrics = {k: [] for k in METRIC_KEYS}
+    idx = 0
+    cdr_label = f"H{cdr_type}"
+
+    with torch.no_grad():
+        for batch in tqdm(loader, desc="Inference"):
+            batch_size = len(batch["L"])
+            ppls, seqs, xs, true_xs, _ = model.infer(batch, device)
+            for i in range(batch_size):
+                dataset_idx = dataset.idx_mapping[idx]
+                cplx = dataset.data[dataset_idx]
+                cid = idx_to_cid[dataset_idx]
+
+                origin_seq = cplx.get_cdr(cdr_label).get_seq()
+                pred_seq = seqs[i]
+
+                # Extract CA coords (index 1 = CA in N, CA, C, O ordering)
+                pred_ca = xs[i][:, 1, :] if xs[i].ndim == 3 else xs[i]
+                true_ca = true_xs[i][:, 1, :] if true_xs[i].ndim == 3 else true_xs[i]
+                if isinstance(pred_ca, torch.Tensor):
+                    pred_ca = pred_ca.cpu().numpy()
+                if isinstance(true_ca, torch.Tensor):
+                    true_ca = true_ca.cpu().numpy()
+
+                # Compute CHIMERA metrics
+                aar_val = chimera_aar(pred_seq, origin_seq)
+                rmsd_val = kabsch_rmsd(pred_ca, true_ca)
+                tm_val = chimera_tm_score(pred_ca, true_ca)
+                liab = count_liabilities(pred_seq)
+
+                all_metrics["ppl"].append(ppls[i])
+                all_metrics["aar"].append(aar_val)
+                all_metrics["rmsd"].append(rmsd_val)
+                all_metrics["tm_score"].append(tm_val)
+                all_metrics["n_liabilities"].append(liab)
+
+                pred = {
+                    "complex_id": cid,
+                    "cdr_type": cdr_label,
+                    "pred_sequence": pred_seq,
+                    "true_sequence": origin_seq,
+                    "pred_coords": pred_ca,
+                    "true_coords": true_ca,
+                    "ppl": ppls[i],
+                    "aar": aar_val,
+                    "rmsd": rmsd_val,
+                    "tm_score": tm_val,
+                    "n_liabilities": liab,
+                }
+                predictions.append(pred)
+                idx += 1
+
+    summary = {k: float(np.mean(v)) for k, v in all_metrics.items() if v}
+    return predictions, summary
+
+
+def save_test_csv(predictions, summary, cdr_label):
+    """Save test metrics as CSV (one row per CDR type) to baseline directory."""
+    csv_path = os.path.join(_SCRIPT_DIR, "test_metrics.csv")
+    row = {"cdr_type": cdr_label, "n_complexes": len(predictions)}
+    row.update(summary)
+
+    fieldnames = ["cdr_type", "n_complexes"] + METRIC_KEYS
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerow(row)
+    print(f"Saved test metrics CSV to {csv_path}")
+
+
+def main():
+    args = parse_args()
+    cfg, shared = load_config()
+    c = build_config(cfg, shared, args)
+    seed_everything(c.seed)
+
+    if torch.cuda.is_available():
+        torch.cuda.set_device(c.gpu)
+    device = torch.device(f"cuda:{c.gpu}" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+    cdr_label = f"H{c.cdr_type}"
+    run_name = f"mean_cdr{c.cdr_type}_{c.split}"
+    save_dir = os.path.join(c.output_dir, run_name)
+    os.makedirs(save_dir, exist_ok=True)
+
+    # Save resolved config
+    with open(os.path.join(save_dir, "config.json"), "w") as f:
+        json.dump(vars(c), f, indent=2)
+
+    # Load pre-cached dataset
+    data_dir = os.path.abspath(c.data_dir)
+    jsonl_path = os.path.join(data_dir, "all.jsonl")
+    print(f"Loading MEAN dataset from {data_dir}...")
+    dataset = RobustEquiAACDataset(jsonl_path)
+    dataset.mode = c.mode
+    print(f"Dataset: {dataset.num_entry} complexes")
+
+    # Load idx_to_cid mapping (ordered list: dataset_index -> chimera complex_id)
+    idx_to_cid_path = os.path.join(data_dir, "idx_to_cid.json")
+    with open(idx_to_cid_path) as f:
+        idx_to_cid = json.load(f)
+    assert len(idx_to_cid) == dataset.num_entry, (
+        f"Mismatch: {len(idx_to_cid)} idx_to_cid vs {dataset.num_entry} dataset entries"
+    )
+    print(f"Loaded idx_to_cid mapping: {len(idx_to_cid)} entries")
+
+    # Build cid_to_idx (inverse lookup for splitting)
+    cid_to_idx = {cid: i for i, cid in enumerate(idx_to_cid)}
+
+    # Split by CHIMERA split IDs
+    split_ids = load_split_ids(c.split, c.data_root)
+    print("Splitting dataset:")
+    views = split_dataset(dataset, split_ids, cid_to_idx)
+    train_set, valid_set, test_set = views["train"], views["val"], views["test"]
+
+    n_channel = dataset[0]["X"].shape[1]
+
+    # Model
+    model = EfficientMCAttModel(
+        c.embed_size, c.hidden_size, n_channel,
+        n_edge_feats=1, n_layers=c.n_layers,
+        cdr_type=c.cdr_type, alpha=c.alpha,
+        n_iter=c.n_iter,
+    ).to(device)
+    print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
+
+    # Optimizer / Scheduler
+    optimizer = torch.optim.Adam(model.parameters(), lr=c.lr)
+    scheduler = torch.optim.lr_scheduler.LambdaLR(
+        optimizer, lr_lambda=lambda epoch: c.anneal_base ** epoch)
+
+    # Loaders
+    train_loader = DataLoader(
+        train_set, batch_size=c.batch_size, shuffle=True,
+        num_workers=c.num_workers, collate_fn=EquiAACDataset.collate_fn)
+    valid_loader = DataLoader(
+        valid_set, batch_size=c.batch_size, shuffle=False,
+        num_workers=c.num_workers, collate_fn=EquiAACDataset.collate_fn)
+    test_loader = DataLoader(
+        test_set, batch_size=c.batch_size, shuffle=False,
+        num_workers=c.num_workers, collate_fn=EquiAACDataset.collate_fn)
+
+    # Callbacks
+    early_stop = EarlyStopping(patience=c.patience, mode=c.es_mode)
+    ckpt = ModelCheckpoint(save_dir, mode=c.ckpt_mode)
+
+    # WandB
+    wandb_run = setup_wandb(c.wandb_project, run_name, vars(c), enabled=c.use_wandb)
+
+    # Training loop
+    for epoch in range(c.max_epoch):
+        t0 = time.time()
+        train_loss, train_snll, train_closs = train_epoch(
+            model, train_loader, optimizer, device, c.grad_clip)
+
+        val_loss, val_snll, val_closs = valid_epoch(model, valid_loader, device)
+        scheduler.step()
+
+        # Val inference with CHIMERA metrics
+        _, val_metrics = run_inference_with_metrics(
+            model, valid_set, valid_loader, device, c.cdr_type, idx_to_cid)
+
+        lr = optimizer.param_groups[0]["lr"]
+        elapsed = time.time() - t0
+        is_best = ckpt.save(model, optimizer, scheduler, epoch, val_loss)
+
+        print(f"Epoch {epoch:3d} | train_loss={train_loss:.4f} val_loss={val_loss:.4f} "
+              f"train_ppl={np.exp(train_snll):.2f} val_ppl={np.exp(val_snll):.2f} "
+              f"val_aar={val_metrics.get('aar', 0):.4f} "
+              f"val_rmsd={val_metrics.get('rmsd', 0):.4f} "
+              f"val_tm={val_metrics.get('tm_score', 0):.4f} "
+              f"lr={lr:.6f} {'*' if is_best else ''} [{elapsed:.0f}s]")
+
+        log_dict = {
+            "epoch": epoch,
+            "train_loss": train_loss, "val_loss": val_loss,
+            "train_snll": train_snll, "val_snll": val_snll,
+            "train_closs": train_closs, "val_closs": val_closs,
+            "train_ppl": float(np.exp(train_snll)),
+            "val_ppl": float(np.exp(val_snll)),
+            "lr": lr,
+        }
+        log_dict.update({f"val_{k}": v for k, v in val_metrics.items()})
+        if wandb_run:
+            wandb_run.log(log_dict)
+
+        if early_stop(val_loss):
+            print(f"Early stopping at epoch {epoch}")
+            break
+
+    # Test
+    print("Loading best model for test...")
+    ckpt.load_best(model, device)
+    predictions, test_metrics = run_inference_with_metrics(
+        model, test_set, test_loader, device, c.cdr_type, idx_to_cid)
+
+    # Save predictions
+    pred_dir = os.path.join(save_dir, "predictions")
+    save_predictions(predictions, pred_dir)
+    print(f"Saved {len(predictions)} predictions to {pred_dir}")
+
+    # Save test metrics CSV
+    save_test_csv(predictions, test_metrics, cdr_label)
+
+    # Print test summary
+    print(f"\nTest results ({len(predictions)} complexes, {cdr_label}):")
+    for k, v in test_metrics.items():
+        print(f"  {k}: {v:.4f}")
+
+    # Log test metrics to wandb
+    if wandb_run:
+        wandb_run.log({f"test_{k}": v for k, v in test_metrics.items()})
+        wandb_run.log({"test_n": len(predictions)})
+        wandb_run.finish()
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,47 @@
+# RAAD CHIMERA-Bench configuration
+# Paths inherited from ../shared_config.yaml (data_root, results_root, trans_baselines)
+
+# Dataset
+dataset:
+  split: epitope_group  # epitope_group | antigen_fold | temporal
+  cdr_type: "3"  # 1 | 2 | 3
+
+# CDR numbering scheme used by this baseline (chothia or imgt)
+numbering_scheme: imgt
+
+# Model (original RAAD hyperparameters)
+model:
+  embed_size: 32
+  hidden_size: 256
+  n_layers: 4
+  dropout: 0.0
+  alpha: 0.8
+  beta: 0.5
+  node_feats_mode: "1111"
+  edge_feats_mode: "1111"
+  interface_only: 1
+  mode: "111"
+
+# Training
+training:
+  seed: 42
+  gpu: 0
+  lr: 1.0e-3
+  batch_size: 8
+  max_epoch: 20
+  anneal_base: 0.9
+  grad_clip: 0.5
+  num_workers: 4
+
+# Callbacks
+callbacks:
+  early_stopping:
+    patience: 10
+    mode: min
+  checkpoint:
+    mode: min
+
+# WandB
+wandb:
+  enabled: false
+  project: chimera_baselines

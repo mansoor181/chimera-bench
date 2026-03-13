@@ -1,0 +1,47 @@
+# ChimeraX script: 4j4p_H_L_A - dymean vs native CDR-H3
+# AAR=0.706, RMSD=2.34A
+# Native: ARDGEISYDYYYYGMDV
+# Predicted: ARDGGYGYYYYYYGFDV
+
+# Open full complex
+open 4j4p.pdb
+
+# Style: full complex as gray cartoon
+color #1 gray
+cartoon style #1 width 1.0
+hide #1 atoms
+
+# Color antibody chains
+color #1/H lightsteelblue
+color #1/L lightsalmon
+
+# Highlight antigen surface (transparent)
+surface #1/A
+transparency #1/A 70
+color #1/A surfaces lightgray
+
+# Open native CDR-H3 (blue tube)
+open native_H3.pdb
+color #2 cornflowerblue
+style #2 stick
+size #2 stickRadius 0.4
+
+# Open predicted CDR-H3 (colored by deviation in B-factor)
+open pred_dymean_H3.pdb
+color bfactor #3 palette blue:white:red range 0,5
+style #3 stick
+size #3 stickRadius 0.4
+
+# Labels
+2dlabels create title text "dymean (AAR=0.71, RMSD=2.3A)" \
+    xpos 0.02 ypos 0.95 color black size 18
+
+# View: zoom to CDR-H3 region
+view #2,3
+zoom 0.8
+
+# Background
+set bgColor white
+
+# Save image
+save dymean_overlay.png width 1200 height 900 supersample 3

@@ -1,0 +1,50 @@
+# dyMEAN CHIMERA-Bench configuration
+# Paths inherited from ../shared_config.yaml (data_root, results_root, trans_baselines)
+
+# Dataset
+dataset:
+  split: epitope_group  # epitope_group | antigen_fold | temporal
+  cdr: null  # null = all CDRs; or list like [H1, H2, H3]
+  paratope: [H3]
+
+# CDR numbering scheme used by this baseline (chothia or imgt)
+numbering_scheme: imgt
+
+# Model (original dyMEAN hyperparameters)
+model:
+  embed_dim: 64
+  hidden_size: 128
+  n_layers: 3
+  iter_round: 3
+  k_neighbors: 9
+  bind_dist_cutoff: 6.6
+  struct_only: false
+  backbone_only: false
+  no_pred_edge_dist: false
+  no_memory: false
+  fix_channel_weights: false
+  mode: "111"
+
+# Training
+training:
+  seed: 42
+  gpu: 0
+  lr: 1.0e-3
+  final_lr: 1.0e-4
+  batch_size: 4
+  max_epoch: 10
+  grad_clip: 1.0
+  num_workers: 4
+
+# Callbacks
+callbacks:
+  early_stopping:
+    patience: 10
+    mode: min
+  checkpoint:
+    mode: min
+
+# WandB
+wandb:
+  enabled: false
+  project: chimera_baselines

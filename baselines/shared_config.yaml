@@ -1,0 +1,42 @@
+# Shared configuration for all CHIMERA baselines.
+# Individual baseline configs inherit these values.
+# Override per-baseline by setting the same key in the baseline's config.yaml.
+#
+# IMPORTANT: Set the CHIMERA_DATA_ROOT environment variable to point to your
+# local copy of the dataset before running any baseline.
+#   export CHIMERA_DATA_ROOT=/path/to/chimera-bench-v1.0
+
+paths:
+  # These paths use ${CHIMERA_DATA_ROOT} as a placeholder.
+  # chimera_utils.py resolves them at runtime from the environment variable.
+  data_root: ${CHIMERA_DATA_ROOT}
+  trans_baselines: ${CHIMERA_DATA_ROOT}/trans_baselines
+  results_root: ${CHIMERA_DATA_ROOT}/results
+
+splits:
+  available:
+    - epitope_group
+    - antigen_fold
+    - temporal
+  default: epitope_group
+
+evaluation:
+  contact_cutoff: 4.5
+  metric_keys:
+    - aar
+    - caar
+    - ppl
+    - rmsd
+    - tm_score
+    - fnat
+    - irmsd
+    - dockq
+    - epitope_precision
+    - epitope_recall
+    - epitope_f1
+    - n_liabilities
+    - chimera_s
+    - chimera_b
+
+wandb:
+  enabled: true

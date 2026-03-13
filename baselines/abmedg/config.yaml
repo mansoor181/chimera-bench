@@ -1,0 +1,64 @@
+# AbMEGD CHIMERA-Bench configuration
+# Paths inherited from ../shared_config.yaml (data_root, results_root, trans_baselines)
+
+# Dataset
+dataset:
+  split: epitope_group  # epitope_group | antigen_fold | temporal
+
+# CDR numbering scheme used by this baseline (chothia or imgt)
+numbering_scheme: chothia
+
+# Model (original AbMEGD hyperparameters from codesign_multicdrs2024.yml)
+model:
+  type: AbMEGD
+  res_feat_dim: 128
+  pair_feat_dim: 64
+  diffusion:
+    num_steps: 100
+    eps_net_opt:
+      num_layers: 6
+  train_structure: true
+  train_sequence: true
+
+# Training
+training:
+  seed: 2024
+  gpu: 0
+  max_iters: 400000
+  val_freq: 1000
+  batch_size: 8
+  max_grad_norm: 100.0
+  num_workers: 4
+  loss_weights:
+    rot: 1.0
+    pos: 1.0
+    seq: 1.0
+  optimizer:
+    type: adam
+    lr: 1.0e-4
+    weight_decay: 0.0
+    beta1: 0.9
+    beta2: 0.999
+  scheduler:
+    type: plateau
+    factor: 0.8
+    patience: 10
+    min_lr: 5.0e-6
+
+# Transforms
+transforms:
+  patch_size: 128
+  antigen_size: 128
+
+# Callbacks
+callbacks:
+  early_stopping:
+    patience: 10
+    mode: min
+  checkpoint:
+    mode: min
+
+# WandB
+wandb:
+  enabled: false
+  project: chimera_baselines

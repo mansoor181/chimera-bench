@@ -1,0 +1,42 @@
+# AbDockGen CHIMERA-Bench configuration
+# Paths inherited from ../shared_config.yaml (data_root, results_root, trans_baselines)
+
+# Dataset
+dataset:
+  split: epitope_group  # epitope_group | antigen_fold | temporal
+  cdr: "3"  # AbDockGen only supports H3
+
+# Model (CondRefineDecoder with hierarchical EGNN)
+model:
+  hierarchical: true
+  hidden_size: 256
+  depth: 4
+  k_neighbors: 9
+  L_target: 20
+  clash_step: 10
+  num_rbf: 16
+  dropout: 0.1
+
+# Training
+training:
+  seed: 42
+  gpu: 0
+  lr: 1.0e-3
+  batch_tokens: 100
+  max_epoch: 10
+  anneal_rate: 0.9
+  clip_norm: 1.0
+  print_iter: 50
+
+# Callbacks
+callbacks:
+  early_stopping:
+    patience: 10
+    mode: min
+  checkpoint:
+    mode: min  # track val PPL
+
+# WandB
+wandb:
+  enabled: false
+  project: chimera_baselines
