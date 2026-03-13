@@ -7,9 +7,9 @@ This directory contains 11 antibody design methods retrained on CHIMERA-Bench un
 | Method | Dir | Paradigm | Venue | Numbering | Epi-Cond? | Multi-CDR? |
 |--------|-----|----------|-------|-----------|:---------:|:----------:|
 | DiffAb | `diffab/` | Diffusion | NeurIPS 2022 | Chothia | Yes | Yes |
-| AbFlowNet | `abflownet/` | Flow matching | -- | Chothia | Yes | Yes |
-| AbMEGD | `abmedg/` | Diffusion | -- | Chothia | Yes | Yes |
-| RADAb | `radab/` | Retrieval + diffusion | -- | Chothia | Yes | Yes |
+| AbFlowNet | `abflownet/` | Flow matching | ICML 2025 | Chothia | Yes | Yes |
+| AbMEGD | `abmedg/` | Diffusion | IJCAI 2025 | Chothia | Yes | Yes |
+| RADAb | `radab/` | Retrieval + diffusion | ICLR 2025 | Chothia | Yes | Yes |
 | dyAb | `dyab/` | Flow matching | AAAI 2025 | IMGT | Yes | Yes |
 | MEAN | `mean/` | Equivariant GNN | ICLR 2023 | IMGT | Yes | No (H3) |
 | dyMEAN | `dymean/` | Equivariant GNN | ICML 2023 | IMGT | Yes | Yes |

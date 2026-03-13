@@ -2,7 +2,7 @@
 
 A benchmark dataset for **epitope-specific antibody design**.
 
-**Paper**: [CHIMERA-Bench: A Gold-Standard Benchmark for Epitope-Specific Antibody Design](https://openreview.net/forum?id=PyZvVIJbSy/) (ICLR 2026 GEM Workshop)
+**Paper**: [CHIMERA-Bench: A Benchmark Dataset for Epitope-Specific Antibody Design](https://openreview.net/forum?id=PyZvVIJbSy/) (ICLR 2026 GEM Workshop)
 
 ## Overview
 
