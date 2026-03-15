@@ -10,7 +10,7 @@ Following the framework of Gebru et al. (2021), "Datasheets for Datasets."
 CHIMERA-Bench was created to provide a standardized, gold-standard benchmark for evaluating computational methods for epitope-specific antibody design. Existing benchmarks (RAbD-60, SKEMPI-53) are small, use inconsistent evaluation protocols, and lack epitope-specific annotations, making fair comparison across methods difficult.
 
 **Who created the dataset and on behalf of which entity?**
-[Authors], [Institution]. Created as part of the CHIMERA-Bench project for submission to NeurIPS Datasets & Benchmarks track.
+[Authors], [Institution]. Created as part of the CHIMERA-Bench project for submission to ICLR GEM workshop 2026.
 
 **Who funded the creation of the dataset?**
 [Funding information to be added.]
@@ -38,7 +38,6 @@ Per complex:
 - Amino acid sequences (heavy, light, antigen)
 - PyG HeteroData residue graph with multi-relational edges
 - Per-chain atom14 and CA coordinates
-- SKEMPI v2 linkage (where available, 29 complexes)
 
 **Is there a label or target associated with each instance?**
 The primary design targets are CDR sequences and structures (especially CDR-H3). Epitope residues serve as conditioning input. Ground truth includes native CDR sequences, backbone coordinates, and binding contacts.
@@ -100,14 +99,14 @@ Yes:
 Yes. Raw PDB files are stored separately from processed annotations and features.
 
 **Is the software used to preprocess/clean/label the instances available?**
-Yes. The full pipeline is provided as `benchmark/pipeline.py` with all processing code in `benchmark/data/`.
+Yes. The full pipeline is provided as `chimera-bench/pipeline.py` with all processing code in `chimera-bench/data/`.
 
 ---
 
 ## Uses
 
 **Has the dataset been used for any tasks already?**
-The dataset is designed for evaluation of 18 antibody design baseline methods spanning 5 format categories (SAbDab-style, RefineGNN JSONL, PDB+FASTA, 6D coordinates, CDR-only).
+The dataset has been used for evaluation of antibody design baseline methods spanning different format categories (SAbDab-style, RefineGNN JSONL, PDB+FASTA, 6D coordinates, CDR-only).
 
 **Is there a repository that links to any or all papers or systems that use this dataset?**
 [Repository URL to be added.]
@@ -118,7 +117,6 @@ The dataset is designed for evaluation of 18 antibody design baseline methods sp
 - Paratope prediction
 - Antibody structure prediction
 - Antibody humanization
-- Affinity maturation (via SKEMPI-linked subset)
 
 **Is there anything about the composition or collection that might impact future uses?**
 The dataset is biased toward experimentally tractable complexes (those amenable to crystallography/cryo-EM). Membrane-bound antigens and intrinsically disordered regions are underrepresented.
@@ -139,8 +137,6 @@ Yes. The dataset will be publicly released.
 - PyPI package (`chimera-bench`) for programmatic access
 - Croissant metadata for ML dataset discovery
 
-**When will the dataset be released?**
-Upon acceptance of the accompanying paper.
 
 **Will the dataset be distributed under a copyright or other IP license?**
 CC-BY-4.0. The underlying PDB structures are public domain; annotations and derived features are released under Creative Commons Attribution.
@@ -156,7 +152,8 @@ No. All source data (PDB, SAbDab, SKEMPI v2) is publicly available for research 
 [Authors/Institution]. The dataset will be hosted on Zenodo (persistent DOI) and HuggingFace Hub.
 
 **How can the owner/curator/manager of the dataset be contacted?**
-[Contact information to be added.]
+- Mansoor Ahmed (mahmed76@student.gsu.edu)
+- Murray Patterson (mpatterson30@gsu.edu)
 
 **Will the dataset be updated?**
 Annual updates are planned to incorporate new structures deposited in the PDB. The temporal split ensures new structures are automatically assigned to test sets.
