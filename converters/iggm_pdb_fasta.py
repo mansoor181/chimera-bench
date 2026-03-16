@@ -10,8 +10,8 @@ from pathlib import Path
 
 from Bio.PDB import PDBParser
 
-from benchmark.config import Config
-from benchmark.data.annotate import ComplexAnnotation, CDR_DEFS
+from config import Config
+from data.annotate import ComplexAnnotation, CDR_DEFS
 
 log = logging.getLogger(__name__)
 

@@ -19,8 +19,8 @@ import numpy as np
 import torch
 from Bio.PDB import PDBParser
 
-from benchmark.config import Config
-from benchmark.data.annotate import ComplexAnnotation
+from config import Config
+from data.annotate import ComplexAnnotation
 
 log = logging.getLogger(__name__)
 

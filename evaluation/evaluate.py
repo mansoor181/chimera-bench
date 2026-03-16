@@ -1,7 +1,7 @@
 """Unified evaluation entry point for CHIMERA-Bench.
 
 Usage:
-    python -m benchmark.evaluation.evaluate \
+    python -m evaluation.evaluate \
         --predictions /path/to/predictions/ \
         --split epitope_group \
         --output results.json
@@ -20,8 +20,8 @@ import torch
 import numpy as np
 from scipy.spatial import cKDTree
 
-from benchmark.config import Config
-from benchmark.evaluation.metrics import (
+from config import Config
+from evaluation.metrics import (
     aar, caar, kabsch_rmsd, tm_score, fnat, interface_rmsd, dockq_score,
     epitope_metrics, count_liabilities, pairwise_diversity,
     structural_diversity, novelty_score, bootstrap_ci,

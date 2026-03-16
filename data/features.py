@@ -1,7 +1,7 @@
 """Step: Coordinate extraction, SKEMPI linking, and complex tensor construction.
 
-Graph construction is handled separately in benchmark.data.graphs.
-PLM embeddings are handled separately in benchmark.data.embeddings.
+Graph construction is handled separately in data.graphs.
+PLM embeddings are handled separately in data.embeddings.
 """
 
 import logging
@@ -12,8 +12,8 @@ import pandas as pd
 import torch
 from Bio.PDB import PDBParser
 
-from benchmark.config import Config
-from benchmark.data.annotate import ComplexAnnotation
+from config import Config
+from data.annotate import ComplexAnnotation
 
 log = logging.getLogger(__name__)
 

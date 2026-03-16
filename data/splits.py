@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from benchmark.config import Config
+from config import Config
 
 log = logging.getLogger(__name__)
 

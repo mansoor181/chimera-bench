@@ -565,7 +565,7 @@ def evaluate_prediction_full(pred_data, native, cdr_type, feat,
     repo_root = baselines_dir.parent
     if str(repo_root) not in sys.path:
         sys.path.insert(0, str(repo_root))
-    from benchmark.evaluation.metrics import (
+    from evaluation.metrics import (
         aar, caar, kabsch_rmsd, tm_score, fnat, interface_rmsd,
         dockq_score, epitope_metrics, count_liabilities,
         chimera_s, chimera_b,
@@ -699,7 +699,7 @@ def run_full_evaluation(pred_dir, split_name, data_root=None, cdr_type_hint=None
     repo_root = baselines_dir.parent
     if str(repo_root) not in sys.path:
         sys.path.insert(0, str(repo_root))
-    from benchmark.evaluation.metrics import mean_std
+    from evaluation.metrics import mean_std
 
     pred_dir = Path(pred_dir)
     root = Path(data_root) if data_root else get_data_root()

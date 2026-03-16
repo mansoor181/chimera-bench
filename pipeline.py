@@ -1,10 +1,10 @@
 """CHIMERA-Bench dataset construction pipeline.
 
 Usage:
-    python -m benchmark.pipeline --steps all
-    python -m benchmark.pipeline --steps collect filter dedup
-    python -m benchmark.pipeline --steps annotate features splits
-    python -m benchmark.pipeline --data-root /path/to/chimera-bench-v1.0
+    python pipeline.py --steps all
+    python pipeline.py --steps collect filter dedup
+    python pipeline.py --steps annotate features splits
+    python pipeline.py --data-root /path/to/chimera-bench-v1.0
 """
 
 import argparse
@@ -15,20 +15,20 @@ from pathlib import Path
 
 import pandas as pd
 
-from benchmark.config import Config
-from benchmark.data.annotate import annotate_all
-from benchmark.data.collect import collect
-from benchmark.data.dedup import deduplicate
-from benchmark.data.features import compute_all_features, link_skempi
-from benchmark.data.graphs import build_all_graphs
-from benchmark.data.filter import apply_filters
-from benchmark.data.splits import generate_splits
-from benchmark.data.validate import validate_all
-from benchmark.converters.sabdab_style import convert_dataset as convert_sabdab
-from benchmark.converters.refinegnn_jsonl import convert_dataset as convert_refinegnn
-from benchmark.converters.iggm_pdb_fasta import convert_dataset as convert_iggm_mpnn
-from benchmark.converters.cdr_only import convert_dataset as convert_cdr_only
-from benchmark.converters.absgm_6d import convert_dataset as convert_absgm
+from config import Config
+from data.annotate import annotate_all
+from data.collect import collect
+from data.dedup import deduplicate
+from data.features import compute_all_features, link_skempi
+from data.graphs import build_all_graphs
+from data.filter import apply_filters
+from data.splits import generate_splits
+from data.validate import validate_all
+from converters.sabdab_style import convert_dataset as convert_sabdab
+from converters.refinegnn_jsonl import convert_dataset as convert_refinegnn
+from converters.iggm_pdb_fasta import convert_dataset as convert_iggm_mpnn
+from converters.cdr_only import convert_dataset as convert_cdr_only
+from converters.absgm_6d import convert_dataset as convert_absgm
 
 log = logging.getLogger(__name__)
 

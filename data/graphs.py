@@ -19,8 +19,8 @@ from Bio.PDB import PDBParser
 from scipy.spatial import cKDTree
 from torch_geometric.data import HeteroData
 
-from benchmark.config import Config
-from benchmark.data.annotate import ComplexAnnotation
+from config import Config
+from data.annotate import ComplexAnnotation
 
 log = logging.getLogger(__name__)
 

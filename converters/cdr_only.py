@@ -11,8 +11,8 @@ import numpy as np
 from Bio.Data.PDBData import protein_letters_3to1_extended as _3to1
 from Bio.PDB import PDBParser
 
-from benchmark.config import Config
-from benchmark.data.annotate import ComplexAnnotation, CDR_DEFS
+from config import Config
+from data.annotate import ComplexAnnotation, CDR_DEFS
 
 log = logging.getLogger(__name__)
 

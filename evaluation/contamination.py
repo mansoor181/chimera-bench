@@ -8,7 +8,7 @@ Checks overlap between CHIMERA-Bench test sets and training data of:
 Reports contamination rates per split type.
 
 Usage:
-    python -m benchmark.evaluation.contamination \
+    python -m evaluation.contamination \
         --split epitope_group --data-root /path/to/chimera-bench-v1.0
 """
 
@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from benchmark.config import Config
+from config import Config
 
 log = logging.getLogger(__name__)
 

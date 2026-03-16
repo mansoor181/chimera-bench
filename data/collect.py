@@ -7,7 +7,7 @@ from pathlib import Path
 import pandas as pd
 import requests
 
-from benchmark.config import Config
+from config import Config
 
 log = logging.getLogger(__name__)
 

@@ -44,7 +44,7 @@ from chimera_utils import (
 
 # CHIMERA evaluation metrics
 sys.path.insert(0, os.path.join(_SCRIPT_DIR, "..", ".."))
-from benchmark.evaluation.metrics import (
+from evaluation.metrics import (
     aar as chimera_aar, kabsch_rmsd, tm_score as chimera_tm_score,
     count_liabilities,
 )

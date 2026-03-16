@@ -9,7 +9,7 @@ import pandas as pd
 from Bio.Data.PDBData import protein_letters_3to1_extended as _3to1
 from Bio.PDB import PDBParser
 
-from benchmark.config import Config
+from config import Config
 
 log = logging.getLogger(__name__)
 

@@ -4,7 +4,7 @@ import logging
 
 import pandas as pd
 
-from benchmark.config import Config
+from config import Config
 
 log = logging.getLogger(__name__)
 
