@@ -367,63 +367,42 @@ def _ensure_numpy(x):
     return np.asarray(x)
 
 
-def compute_contacts_from_atom14(ab_atom14_coords, ab_atom14_mask,
-                                 ag_atom14_coords, ag_atom14_mask,
-                                 cutoff=4.5):
-    """Compute epitope/paratope masks and contact pairs from atom14 coords.
+def compute_ca_contacts(ab_ca, ag_ca, cutoff=8.0):
+    """Compute residue-level contacts from symmetric CA-CA distances.
 
     Args:
-        ab_atom14_coords: (N_ab, 14, 3) antibody all-atom coords
-        ab_atom14_mask: (N_ab, 14) bool mask for valid atoms
-        ag_atom14_coords: (N_ag, 14, 3) antigen all-atom coords
-        ag_atom14_mask: (N_ag, 14) bool mask for valid atoms
-        cutoff: contact distance in Angstroms
+        ab_ca: (N_ab, 3) antibody CA coordinates
+        ag_ca: (N_ag, 3) antigen CA coordinates
+        cutoff: CA-CA distance threshold in Angstroms (default 8.0)
 
     Returns:
         epitope_mask: (N_ag,) bool
         paratope_mask: (N_ab,) bool
         contact_pairs: set of (ab_residue_idx, ag_residue_idx)
     """
-    n_ab = len(ab_atom14_coords)
-    n_ag = len(ag_atom14_coords)
+    n_ab = len(ab_ca)
+    n_ag = len(ag_ca)
     epitope_mask = np.zeros(n_ag, dtype=bool)
     paratope_mask = np.zeros(n_ab, dtype=bool)
     contact_pairs = set()
 
-    # Gather all valid antigen atoms with residue index
-    ag_atoms = []
-    ag_res_idx = []
-    for i in range(n_ag):
-        valid = ag_atom14_mask[i]
-        if valid.any():
-            ag_atoms.append(ag_atom14_coords[i][valid])
-            ag_res_idx.extend([i] * int(valid.sum()))
-    if not ag_atoms:
+    if n_ab == 0 or n_ag == 0:
         return epitope_mask, paratope_mask, contact_pairs
-    ag_atoms = np.concatenate(ag_atoms, axis=0)
-    ag_res_idx = np.array(ag_res_idx)
-    ag_tree = cKDTree(ag_atoms)
 
-    # Query each antibody residue's atoms
-    for ab_i in range(n_ab):
-        valid = ab_atom14_mask[ab_i]
-        if not valid.any():
-            continue
-        ab_res_atoms = ab_atom14_coords[ab_i][valid]
-        for atom_coord in ab_res_atoms:
-            nearby = ag_tree.query_ball_point(atom_coord, cutoff)
-            if nearby:
-                paratope_mask[ab_i] = True
-                for idx in nearby:
-                    ag_j = ag_res_idx[idx]
-                    epitope_mask[ag_j] = True
-                    contact_pairs.add((ab_i, ag_j))
+    tree = cKDTree(ag_ca)
+    for i, coord in enumerate(ab_ca):
+        for j in tree.query_ball_point(coord, cutoff):
+            paratope_mask[i] = True
+            epitope_mask[j] = True
+            contact_pairs.add((i, j))
 
     return epitope_mask, paratope_mask, contact_pairs
 
 
-def load_native_complex(complex_id, feat_dir, cutoff=4.5):
+def load_native_complex(complex_id, feat_dir, cutoff=8.0):
     """Load a native complex from complex_features and compute contacts.
+
+    Contacts are computed using symmetric CA-CA distances at the given cutoff.
 
     Returns:
         dict with keys: complex_id, true_sequence, ab_ca_coords, ag_ca_coords,
@@ -442,19 +421,8 @@ def load_native_complex(complex_id, feat_dir, cutoff=4.5):
     l_seq = feat["light_sequence"]
     full_seq = h_seq + l_seq
 
-    # Build atom14 for antibody (concat heavy + light)
-    h_a14 = _ensure_numpy(feat["heavy_atom14_coords"])
-    h_m14 = _ensure_numpy(feat["heavy_atom14_mask"])
-    l_a14 = _ensure_numpy(feat["light_atom14_coords"])
-    l_m14 = _ensure_numpy(feat["light_atom14_mask"])
-    ab_a14 = np.concatenate([h_a14, l_a14], axis=0)
-    ab_m14 = np.concatenate([h_m14, l_m14], axis=0)
-
-    ag_a14 = _ensure_numpy(feat["antigen_atom14_coords"])
-    ag_m14 = _ensure_numpy(feat["antigen_atom14_mask"])
-
-    epitope_mask, paratope_mask, contact_pairs = compute_contacts_from_atom14(
-        ab_a14, ab_m14, ag_a14, ag_m14, cutoff=cutoff,
+    epitope_mask, paratope_mask, contact_pairs = compute_ca_contacts(
+        ab_ca, ag_ca, cutoff=cutoff,
     )
 
     return {
@@ -471,7 +439,7 @@ def load_native_complex(complex_id, feat_dir, cutoff=4.5):
     }
 
 
-def load_natives(split_name, data_root=None, split_type="test", cutoff=4.5):
+def load_natives(split_name, data_root=None, split_type="test", cutoff=8.0):
     """Load native complexes for a split.
 
     Returns:
@@ -567,8 +535,8 @@ def evaluate_prediction_full(pred_data, native, cdr_type, feat,
         sys.path.insert(0, str(repo_root))
     from evaluation.metrics import (
         aar, caar, kabsch_rmsd, tm_score, fnat, interface_rmsd,
-        dockq_score, epitope_metrics, count_liabilities,
-        chimera_s, chimera_b,
+        dockq_score, epitope_metrics, compute_epitope_mask,
+        count_liabilities, chimera_s, chimera_b,
     )
 
     result = {"complex_id": native["complex_id"], "cdr_type": cdr_type}
@@ -635,37 +603,45 @@ def evaluate_prediction_full(pred_data, native, cdr_type, feat,
                 pred_coords = (pred_coords - centroid_p) @ R.T + centroid_t
         pred_ab_full = construct_pred_ab_full_coords(pred_coords, cdr_indices, ab_ca)
 
-    # Group 4: Epitope specificity
+    # CDR-specific filtering: only count contacts where the antibody partner
+    # is a CDR residue. Framework contacts are trivially preserved by
+    # construct_pred_ab_full_coords and would dominate the metrics.
+    cdr_set = set(cdr_indices.tolist()) if len(cdr_indices) > 0 else set()
+
+    # Group 4: Epitope specificity (CDR-specific)
     result["epitope_precision"] = 0.0
     result["epitope_recall"] = 0.0
     result["epitope_f1"] = 0.0
-    if pred_ab_full is not None and len(ag_ca) > 0:
-        epi = epitope_metrics(pred_ab_full, ag_ca, native["epitope_mask"])
+    if pred_ab_full is not None and len(ag_ca) > 0 and len(cdr_indices) > 0:
+        # CDR-specific: only antigen residues contacted by CDR residues
+        true_epi_mask = compute_epitope_mask(ab_ca[cdr_indices], ag_ca, cutoff=8.0)
+        epi = epitope_metrics(pred_ab_full[cdr_indices], ag_ca, true_epi_mask)
         result.update(epi)
 
-    # Group 3: Interface
+    # Group 3: Interface (CDR-specific contacts)
     result["fnat"] = 0.0
     result["irmsd"] = float("inf")
     result["dockq"] = 0.0
-    if pred_ab_full is not None and len(native["contact_pairs"]) > 0:
-        tree = cKDTree(ag_ca)
-        pred_contacts = set()
-        for i, coord in enumerate(pred_ab_full):
-            nearby = tree.query_ball_point(coord, 4.5)
-            for j in nearby:
-                pred_contacts.add((i, j))
+    if pred_ab_full is not None and cdr_set:
+        # Full CA-CA 8A contacts, then filter to CDR-specific
+        all_true = native["contact_pairs"]
+        _, _, all_pred = compute_ca_contacts(pred_ab_full, ag_ca, cutoff=8.0)
 
-        fnat_val = fnat(pred_contacts, native["contact_pairs"])
-        result["fnat"] = fnat_val
+        true_cdr_contacts = {(i, j) for i, j in all_true if i in cdr_set}
+        pred_cdr_contacts = {(i, j) for i, j in all_pred if i in cdr_set}
 
-        irmsd_val = interface_rmsd(
-            pred_ab_full, ag_ca, ab_ca, ag_ca,
-            list(native["contact_pairs"]),
-        )
-        result["irmsd"] = irmsd_val
+        if true_cdr_contacts:
+            fnat_val = fnat(pred_cdr_contacts, true_cdr_contacts)
+            result["fnat"] = fnat_val
 
-        lrmsd = kabsch_rmsd(pred_ab_full, ab_ca)
-        result["dockq"] = dockq_score(fnat_val, irmsd_val, lrmsd)
+            irmsd_val = interface_rmsd(
+                pred_ab_full, ag_ca, ab_ca, ag_ca,
+                list(true_cdr_contacts),
+            )
+            result["irmsd"] = irmsd_val
+
+            lrmsd = kabsch_rmsd(pred_ab_full, ab_ca)
+            result["dockq"] = dockq_score(fnat_val, irmsd_val, lrmsd)
 
     # Composites
     result["chimera_s"] = chimera_s(

@@ -21,7 +21,7 @@ splits:
   default: epitope_group
 
 evaluation:
-  contact_cutoff: 4.5
+  contact_cutoff: 8.0  # CA-CA distance threshold
   metric_keys:
     - aar
     - caar

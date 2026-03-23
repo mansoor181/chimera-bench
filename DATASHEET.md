@@ -33,7 +33,7 @@ Per complex:
 - PDB structure file (heavy chain, light chain, antigen)
 - ANARCI numbering in IMGT and Chothia schemes
 - CDR annotations (H1-H3, L1-L3) under both schemes
-- Epitope and paratope residue annotations (4.5 A cutoff)
+- Epitope and paratope residue annotations (4.5 A all-atom cutoff in stored annotations; evaluation uses 8.0 A CA-CA)
 - Residue-level contact pairs with distances
 - Amino acid sequences (heavy, light, antigen)
 - PyG HeteroData residue graph with multi-relational edges
@@ -71,7 +71,7 @@ Structures are from X-ray crystallography and cryo-EM experiments deposited in t
 2. Apply quality filters (resolution, chain pairing, antigen type)
 3. Deduplicate using MMseqs2 at 95% CDR-H3 sequence identity, 80% coverage
 4. Run ANARCI for antibody numbering in IMGT and Chothia schemes
-5. Compute epitope/paratope/contact annotations at 4.5 A atom-atom cutoff
+5. Compute epitope/paratope/contact annotations at 4.5 A atom-atom cutoff (stored in .pt files; evaluation metrics use 8.0 A CA-CA contacts)
 6. Link to SKEMPI v2 for binding affinity data
 
 **If the dataset is a sample, what is the sampling strategy?**

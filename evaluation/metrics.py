@@ -92,6 +92,28 @@ def tm_score(pred_coords: np.ndarray, true_coords: np.ndarray) -> float:
 
 # -- Group 3: Binding Interface Quality --
 
+def compute_ca_contacts(ab_ca: np.ndarray, ag_ca: np.ndarray,
+                        cutoff: float = 8.0) -> set[tuple[int, int]]:
+    """Compute residue-level contacts from CA-CA distances.
+
+    Args:
+        ab_ca: (N_ab, 3) antibody CA coordinates
+        ag_ca: (N_ag, 3) antigen CA coordinates
+        cutoff: CA-CA distance threshold in Angstroms
+
+    Returns:
+        set of (ab_residue_idx, ag_residue_idx) pairs within cutoff
+    """
+    if len(ab_ca) == 0 or len(ag_ca) == 0:
+        return set()
+    tree = cKDTree(ag_ca)
+    contacts = set()
+    for i, coord in enumerate(ab_ca):
+        for j in tree.query_ball_point(coord, cutoff):
+            contacts.add((i, j))
+    return contacts
+
+
 def fnat(pred_contacts: set[tuple], true_contacts: set[tuple]) -> float:
     """Fraction of native contacts recovered."""
     if not true_contacts:
@@ -127,33 +149,56 @@ def dockq_score(fnat_val: float, irmsd: float, lrmsd: float) -> float:
 
 # -- Group 4: Epitope Specificity --
 
-def epitope_metrics(pred_ab_coords: np.ndarray, ag_coords: np.ndarray,
-                    true_epitope_mask: np.ndarray,
-                    cutoff: float = 4.5) -> dict[str, float]:
-    """Compute epitope precision, recall, F1.
+def compute_epitope_mask(ab_ca: np.ndarray, ag_ca: np.ndarray,
+                         cutoff: float = 8.0) -> np.ndarray:
+    """Compute epitope mask: antigen residues contacted by antibody CA atoms.
 
     Args:
-        pred_ab_coords: (N_ab, 3) Ca coords of designed antibody
+        ab_ca: (N_ab, 3) antibody CA coordinates (CDR-only for CDR-specific)
+        ag_ca: (N_ag, 3) antigen CA coordinates
+        cutoff: CA-CA distance threshold in Angstroms
+
+    Returns:
+        (N_ag,) boolean array -- True for epitope residues
+    """
+    mask = np.zeros(len(ag_ca), dtype=bool)
+    if len(ab_ca) == 0 or len(ag_ca) == 0:
+        return mask
+    tree = cKDTree(ag_ca)
+    for coord in ab_ca:
+        for j in tree.query_ball_point(coord, cutoff):
+            mask[j] = True
+    return mask
+
+
+def epitope_metrics(pred_ab_coords: np.ndarray, ag_coords: np.ndarray,
+                    true_epitope_mask: np.ndarray,
+                    cutoff: float = 8.0) -> dict[str, float]:
+    """Compute epitope precision, recall, F1 using CA-CA contacts.
+
+    For CDR-specific evaluation, pass CDR-only CA coords as pred_ab_coords
+    and a CDR-specific true_epitope_mask (from compute_epitope_mask with
+    CDR-only native coords).
+
+    Args:
+        pred_ab_coords: (N, 3) Ca coords (CDR-only for CDR-specific eval)
         ag_coords: (N_ag, 3) Ca coords of antigen
         true_epitope_mask: (N_ag,) binary mask of true epitope residues
-        cutoff: contact distance threshold
+        cutoff: CA-CA contact distance threshold (default 8.0 A)
     """
     if len(pred_ab_coords) == 0 or len(ag_coords) == 0:
         return {"epitope_precision": 0, "epitope_recall": 0, "epitope_f1": 0}
 
-    tree = cKDTree(ag_coords)
-    contacted = set()
-    for ab_coord in pred_ab_coords:
-        nearby = tree.query_ball_point(ab_coord, cutoff)
-        contacted.update(nearby)
-
+    pred_epi_mask = compute_epitope_mask(pred_ab_coords, ag_coords, cutoff)
+    pred_set = set(np.where(pred_epi_mask)[0])
     true_epi = set(np.where(true_epitope_mask)[0])
-    if not contacted and not true_epi:
+
+    if not pred_set and not true_epi:
         return {"epitope_precision": 1.0, "epitope_recall": 1.0,
                 "epitope_f1": 1.0}
 
-    tp = len(contacted & true_epi)
-    precision = tp / len(contacted) if contacted else 0.0
+    tp = len(pred_set & true_epi)
+    precision = tp / len(pred_set) if pred_set else 0.0
     recall = tp / len(true_epi) if true_epi else 0.0
     f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
 
@@ -215,18 +260,15 @@ def _edit_distance(s1: str, s2: str) -> int:
 
 # -- Composite Scores --
 
-def chimera_s(dockq: float, rmsd: float, tmscore: float,
-              lddt: float = 0.0) -> float:
+def chimera_s(dockq: float, rmsd: float, tmscore: float) -> float:
     """CHIMERA-S: structural + interface quality composite."""
     rmsd_norm = max(0, 1 - rmsd / 10.0)
-    return 0.35 * dockq + 0.25 * rmsd_norm + 0.25 * tmscore + 0.15 * lddt
+    return 0.35 * dockq + 0.25 * rmsd_norm + 0.25 * tmscore
 
 
-def chimera_b(epitope_f1: float, fnat_val: float,
-              imp: float = 0.0) -> float:
+def chimera_b(epitope_f1: float, fnat_val: float) -> float:
     """CHIMERA-B: binding specificity composite."""
-    imp_complement = 1 - imp / 100.0
-    return 0.5 * epitope_f1 + 0.3 * fnat_val + 0.2 * (1 - max(0, min(1, imp_complement)))
+    return 0.5 * epitope_f1 + 0.3 * fnat_val
 
 
 # -- Group 5 (cont.): Structural Diversity --
@@ -283,3 +325,38 @@ def mean_std(values: list[float]) -> dict:
     if len(values) == 0:
         return {"mean": 0.0, "std": 0.0}
     return {"mean": float(np.mean(values)), "std": float(np.std(values))}
+
+
+def bootstrap_ci(values: list[float], n_bootstrap: int = 10000,
+                 ci: float = 0.95) -> dict:
+    """Compute mean with bootstrap confidence interval.
+
+    Args:
+        values: per-complex metric values
+        n_bootstrap: number of bootstrap samples
+        ci: confidence level (default 0.95)
+
+    Returns:
+        dict with keys: mean, ci_lower, ci_upper, std
+    """
+    values = np.array(values, dtype=float)
+    if len(values) == 0:
+        return {"mean": 0.0, "ci_lower": 0.0, "ci_upper": 0.0, "std": 0.0}
+
+    observed_mean = float(np.mean(values))
+    rng = np.random.default_rng(42)
+    bootstrap_means = np.array([
+        np.mean(rng.choice(values, size=len(values), replace=True))
+        for _ in range(n_bootstrap)
+    ])
+
+    alpha = 1 - ci
+    ci_lower = float(np.percentile(bootstrap_means, 100 * alpha / 2))
+    ci_upper = float(np.percentile(bootstrap_means, 100 * (1 - alpha / 2)))
+
+    return {
+        "mean": observed_mean,
+        "ci_lower": ci_lower,
+        "ci_upper": ci_upper,
+        "std": float(np.std(values)),
+    }
