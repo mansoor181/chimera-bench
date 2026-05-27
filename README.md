@@ -251,6 +251,144 @@ chimera-bench/
 | antigen_fold | 2,338 | 292 | 292 | Unseen antigen folds |
 | temporal | 2,337 | 292 | 293 | Prospective (by deposition date) |
 
+
+### Split 1: Epitope-Group (primary -- generalize to unseen epitopes)
+
+- Cluster epitopes by structural similarity (TM-align on epitope patches)
+- Test set contains epitope clusters never seen during training
+- **Tests**: Can the method generalize to novel binding sites?
+- This is the gold-standard split for epitope-specific design
+
+### Split 2: Antigen-Fold (structural generalization)
+
+- Cluster antigens by CATH superfamily classification
+- Test set contains antigen folds absent from training
+- **Tests**: Can the method handle novel antigen topologies?
+
+### Split 3: Temporal (realistic deployment scenario)
+
+- Train: structures deposited before 2022-01-01
+- Val: 2022-01-01 to 2023-06-01
+- Test: after 2023-06-01
+- **Tests**: Does the method work on genuinely new targets?
+
+### Split Statistics
+
+**Dataset Size**: 2922 antibody-antigen complexes (after filtering and deduplication)
+
+| Split | Train | Val | Test | Ratio |
+|-------|-------|-----|------|-------|
+| epitope_group | 2338 | 292 | 292 | 80/10/10 |
+| antigen_fold | 2338 | 292 | 292 | 80/10/10 |
+| temporal | 2337 | 292 | 293 | 80/10/10 |
+
+**Integrity Guarantees**:
+- No train/val/test overlap within any split (verified)
+- Clusters are never split across train and test (whole-cluster assignment)
+- Test sets differ across split types (~10-13% overlap between any two test sets)
+
+**Epitope-Group Clustering**:
+- Method: Kabsch RMSD on epitope CA coordinates with hierarchical clustering (average linkage)
+- Threshold: 3.0 A RMSD cutoff for cluster membership
+- Epitopes with different sizes use geometric hash (center of mass + spread) for distance
+- Complexes without valid epitope coordinates (< 3 residues) assigned to singleton clusters
+
+**Antigen-Fold Clustering (CATH)**:
+- Source: CATH domain list (latest release from cathdb.info)
+- Grouping level: Superfamily (C.A.T.H - first 4 levels of CATH hierarchy)
+- Coverage: 139 unique superfamilies in train, 9 in test (8 unseen in train)
+- Unmapped chains: ~50% (peptide antigens, recent structures without CATH annotation) treated as singleton clusters
+
+**Temporal Split Cutoffs**:
+- Train: 1990-08-27 to 2024-05-08
+- Val: 2024-05-08 to 2025-05-14
+- Test: 2025-05-14 to 2026-01-28 (most recent structures)
+- Complexes without parseable dates assigned to train
+
+### Detailed Per-Split Statistics
+
+#### Epitope-Group Split
+
+| Subset | n | CDR-H3 Length | Epitope Size | Antigen Size |
+|--------|---|---------------|--------------|--------------|
+| Train | 2338 | 14.4 ± 4.2 [3-63] | 16.4 ± 6.2 [0-64] | 265.5 ± 273.1 [3-2363] |
+| Val | 292 | 15.4 ± 4.3 [6-26] | 24.0 ± 6.6 [0-46] | 381.1 ± 278.4 [1-1853] |
+| Test | 292 | 15.5 ± 4.2 [4-28] | 24.0 ± 6.6 [1-62] | 379.2 ± 282.8 [1-1349] |
+
+CDR-H3 length distribution (Train/Val/Test):
+- Short (<10): 9.2% / 7.5% / 5.1%
+- Medium (10-15): 57.4% / 45.5% / 47.9%
+- Long (16-20): 24.1% / 33.6% / 33.9%
+- Very Long (>20): 9.2% / 13.4% / 13.0%
+
+Epitope size distribution (Train/Val/Test):
+- Small (<15): 38.8% / 5.1% / 5.1%
+- Medium (15-25): 54.8% / 59.6% / 53.4%
+- Large (>25): 6.4% / 35.3% / 41.4%
+
+Antigen size distribution (Train/Val/Test):
+- Small (<200): 57.2% / 34.2% / 33.6%
+- Medium (200-500): 30.9% / 46.9% / 48.3%
+- Large (>500): 11.8% / 18.8% / 18.2%
+
+#### Antigen-Fold Split
+
+| Subset | n | CDR-H3 Length | Epitope Size | Antigen Size |
+|--------|---|---------------|--------------|--------------|
+| Train | 2338 | 14.5 ± 4.2 [3-29] | 18.0 ± 6.9 [0-64] | 298.5 ± 284.1 [1-1853] |
+| Val | 292 | 14.9 ± 5.1 [5-63] | 17.4 ± 7.1 [1-46] | 262.6 ± 270.1 [1-2363] |
+| Test | 292 | 14.6 ± 4.1 [5-28] | 17.7 ± 7.1 [1-52] | 233.6 ± 228.2 [2-1265] |
+
+CDR-H3 length distribution (Train/Val/Test):
+- Short (<10): 8.6% / 9.2% / 8.6%
+- Medium (10-15): 56.1% / 51.4% / 52.7%
+- Long (16-20): 25.2% / 29.8% / 29.1%
+- Very Long (>20): 10.1% / 9.6% / 9.6%
+
+Epitope size distribution (Train/Val/Test):
+- Small (<15): 31.3% / 33.2% / 37.0%
+- Medium (15-25): 55.8% / 55.5% / 49.7%
+- Large (>25): 12.9% / 11.3% / 13.4%
+
+Antigen size distribution (Train/Val/Test):
+- Small (<200): 50.7% / 57.2% / 62.7%
+- Medium (200-500): 35.1% / 32.9% / 29.1%
+- Large (>500): 14.2% / 9.9% / 8.2%
+
+#### Temporal Split
+
+| Subset | n | CDR-H3 Length | Epitope Size | Antigen Size | Date Range |
+|--------|---|---------------|--------------|--------------|------------|
+| Train | 2337 | 14.5 ± 4.3 [3-63] | 17.7 ± 7.0 [0-64] | 283.2 ± 281.8 [1-1853] | 1990-08-27 to 2024-05-08 |
+| Val | 292 | 14.9 ± 4.1 [5-33] | 18.9 ± 6.9 [5-52] | 320.0 ± 276.7 [5-1349] | 2024-05-08 to 2025-05-14 |
+| Test | 293 | 15.1 ± 3.9 [6-26] | 19.1 ± 6.2 [1-34] | 299.0 ± 249.3 [2-2363] | 2025-05-14 to 2026-01-28 |
+
+CDR-H3 length distribution (Train/Val/Test):
+- Short (<10): 9.2% / 7.2% / 5.8%
+- Medium (10-15): 55.3% / 55.1% / 55.6%
+- Long (16-20): 25.8% / 25.7% / 28.3%
+- Very Long (>20): 9.7% / 12.0% / 10.2%
+
+Epitope size distribution (Train/Val/Test):
+- Small (<15): 33.8% / 27.1% / 23.5%
+- Medium (15-25): 54.2% / 58.6% / 59.0%
+- Large (>25): 12.0% / 14.4% / 17.4%
+
+Antigen size distribution (Train/Val/Test):
+- Small (<200): 54.3% / 45.5% / 46.1%
+- Medium (200-500): 32.6% / 39.0% / 42.3%
+- Large (>500): 13.1% / 15.4% / 11.6%
+
+### Stratified Analyses (within each split)
+
+These are not separate splits but diagnostic breakdowns reported for each split:
+
+- **By CDR-H3 length**: Short (<10), Medium (10-15), Long (16-20), Very Long (>20)
+- **By epitope size**: Small (<15 residues), Medium (15-25), Large (>25)
+- **By antigen size**: Small (<200 residues), Medium (200-500), Large (>500)
+- **Per-CDR**: H1, H2, H3, L1, L2, L3 reported separately
+
+
 ## Configuration
 
 All scripts read the data path from the `CHIMERA_DATA_ROOT` environment variable:

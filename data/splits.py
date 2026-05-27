@@ -2,14 +2,19 @@
 
 import json
 import logging
+import urllib.request
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from scipy.cluster.hierarchy import fcluster, linkage
+from scipy.spatial.distance import squareform
 
-from config import Config
+from benchmark.config import Config
 
 log = logging.getLogger(__name__)
+
+CATH_DOMAIN_LIST_URL = "http://download.cathdb.info/cath/releases/latest-release/cath-classification-data/cath-domain-list.txt"
 
 
 def _random_split(ids: list[str], cfg: Config,
@@ -67,51 +72,312 @@ def _cluster_split(ids: list[str], cluster_labels: dict[str, int],
     return split
 
 
+def _kabsch_rmsd(coords1: np.ndarray, coords2: np.ndarray) -> float:
+    """Compute RMSD after optimal superposition (Kabsch algorithm).
+
+    Both inputs should be (N, 3) arrays centered at origin.
+    Returns inf if alignment fails (e.g., degenerate coordinates).
+    """
+    if len(coords1) != len(coords2) or len(coords1) < 3:
+        return float("inf")
+
+    # Center coordinates
+    c1 = coords1 - coords1.mean(axis=0)
+    c2 = coords2 - coords2.mean(axis=0)
+
+    # Compute covariance matrix
+    H = c1.T @ c2
+    U, S, Vt = np.linalg.svd(H)
+
+    # Handle reflection
+    d = np.sign(np.linalg.det(Vt.T @ U.T))
+    D = np.diag([1, 1, d])
+    R = Vt.T @ D @ U.T
+
+    # Rotate and compute RMSD
+    c1_rot = c1 @ R
+    rmsd = np.sqrt(np.mean(np.sum((c1_rot - c2) ** 2, axis=1)))
+    return rmsd
+
+
+def _build_resid_to_index_map(pdb_path: Path, chain_id: str) -> dict[int, int]:
+    """Build mapping from PDB residue ID to CA array index."""
+    from Bio.PDB import PDBParser
+
+    parser = PDBParser(QUIET=True)
+    structure = parser.get_structure(pdb_path.stem, pdb_path)
+    model = structure[0]
+
+    if chain_id not in model:
+        return {}
+
+    resid_to_idx = {}
+    idx = 0
+    for res in model[chain_id].get_residues():
+        if res.id[0] != " ":  # Skip hetero residues
+            continue
+        if "CA" in res:
+            resid_to_idx[res.id[1]] = idx
+            idx += 1
+
+    return resid_to_idx
+
+
+def _extract_epitope_coords(complex_id: str, cfg: Config) -> np.ndarray | None:
+    """Load epitope CA coordinates from complex_features."""
+    import torch
+
+    feat_path = cfg.processed_dir / "complex_features" / f"{complex_id}.pt"
+    if not feat_path.exists():
+        return None
+
+    data = torch.load(feat_path, weights_only=False)
+    epitope_residues = data.get("epitope_residues", [])
+    ag_ca_coords = data.get("antigen_ca_coords")
+
+    if not epitope_residues or ag_ca_coords is None:
+        return None
+
+    # Convert to numpy if tensor
+    if hasattr(ag_ca_coords, "numpy"):
+        ag_ca_coords = ag_ca_coords.numpy()
+
+    # Build PDB resid -> array index mapping
+    # Extract PDB ID and antigen chain from complex_id
+    parts = complex_id.split("_")
+    pdb_id = parts[0]
+    ag_chain = parts[3] if len(parts) > 3 else parts[-1]
+
+    pdb_path = cfg.structures_dir / f"{pdb_id}.pdb"
+    if not pdb_path.exists():
+        return None
+
+    resid_to_idx = _build_resid_to_index_map(pdb_path, ag_chain)
+
+    # Map epitope residues to array indices
+    epitope_indices = []
+    for chain, resid, resname in epitope_residues:
+        idx = resid_to_idx.get(resid)
+        if idx is not None and idx < len(ag_ca_coords):
+            epitope_indices.append(idx)
+
+    if len(epitope_indices) < 3:
+        return None
+
+    return ag_ca_coords[epitope_indices]
+
+
+def _compute_epitope_distance_matrix(
+    complex_ids: list[str],
+    cfg: Config,
+    max_workers: int = 8
+) -> tuple[np.ndarray, list[str]]:
+    """Compute pairwise RMSD matrix for epitope patches.
+
+    Returns distance matrix and list of valid complex IDs.
+    Uses multiprocessing for efficiency.
+    """
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+
+    # Load all epitope coordinates
+    log.info("Loading epitope coordinates for %d complexes...", len(complex_ids))
+    epitope_coords = {}
+    for cid in complex_ids:
+        coords = _extract_epitope_coords(cid, cfg)
+        if coords is not None and len(coords) >= 3:
+            epitope_coords[cid] = coords
+
+    valid_ids = list(epitope_coords.keys())
+    n = len(valid_ids)
+    log.info("Loaded %d valid epitope patches (skipped %d)", n, len(complex_ids) - n)
+
+    if n == 0:
+        return np.zeros((0, 0)), []
+
+    # Compute pairwise RMSD matrix
+    log.info("Computing pairwise RMSD matrix (%d x %d)...", n, n)
+    dist_matrix = np.zeros((n, n))
+
+    # Use condensed distance computation
+    for i in range(n):
+        for j in range(i + 1, n):
+            coords_i = epitope_coords[valid_ids[i]]
+            coords_j = epitope_coords[valid_ids[j]]
+
+            # For different-sized epitopes, use the shorter one and align
+            if len(coords_i) != len(coords_j):
+                # Use geometric hash: center of mass + spread
+                com_i = coords_i.mean(axis=0)
+                com_j = coords_j.mean(axis=0)
+                spread_i = np.std(np.linalg.norm(coords_i - com_i, axis=1))
+                spread_j = np.std(np.linalg.norm(coords_j - com_j, axis=1))
+                # Distance based on size mismatch + spread difference
+                dist = abs(len(coords_i) - len(coords_j)) * 0.5 + abs(spread_i - spread_j)
+            else:
+                dist = _kabsch_rmsd(coords_i, coords_j)
+
+            dist_matrix[i, j] = dist
+            dist_matrix[j, i] = dist
+
+    return dist_matrix, valid_ids
+
+
+def _cluster_epitopes_by_structure(
+    complex_ids: list[str],
+    cfg: Config,
+    rmsd_threshold: float = 3.0
+) -> dict[str, int]:
+    """Cluster epitopes by structural similarity using hierarchical clustering.
+
+    Args:
+        complex_ids: List of complex IDs to cluster
+        cfg: Config with data paths
+        rmsd_threshold: RMSD cutoff for clustering (Angstroms)
+
+    Returns:
+        dict mapping complex_id -> cluster_label
+    """
+    dist_matrix, valid_ids = _compute_epitope_distance_matrix(complex_ids, cfg)
+
+    if len(valid_ids) == 0:
+        log.warning("No valid epitope patches found, falling back to individual clusters")
+        return {cid: i for i, cid in enumerate(complex_ids)}
+
+    # Convert to condensed form for scipy
+    condensed = squareform(dist_matrix)
+
+    # Hierarchical clustering
+    log.info("Performing hierarchical clustering with threshold %.1f A...", rmsd_threshold)
+    linkage_matrix = linkage(condensed, method="average")
+    cluster_labels = fcluster(linkage_matrix, t=rmsd_threshold, criterion="distance")
+
+    # Map valid IDs to cluster labels
+    cluster_map = {cid: int(label) for cid, label in zip(valid_ids, cluster_labels)}
+
+    # Assign singletons to complexes that couldn't be clustered
+    max_label = max(cluster_map.values()) if cluster_map else 0
+    for cid in complex_ids:
+        if cid not in cluster_map:
+            max_label += 1
+            cluster_map[cid] = max_label
+
+    n_clusters = len(set(cluster_map.values()))
+    log.info("Created %d epitope clusters from %d complexes", n_clusters, len(complex_ids))
+
+    return cluster_map
+
+
 def epitope_group_split(df: pd.DataFrame, annotations: list,
                         cfg: Config) -> dict[str, list[str]]:
     """Split by epitope structural similarity clusters.
 
-    Clusters epitopes so test set contains entirely unseen epitope patterns.
-    Uses a hash of sorted epitope residue IDs as a proxy for structural grouping.
-    For full structural clustering, use TM-align on epitope patches (expensive).
+    Clusters epitopes using Kabsch RMSD so test set contains structurally
+    distinct epitope patterns.
     """
-    # Build epitope fingerprint per complex
-    cluster_labels = {}
-    for ann in annotations:
-        # Use sorted epitope residue positions as fingerprint
-        epi_key = tuple(sorted((c, r) for c, r, _ in ann.epitope_residues))
-        cluster_labels[ann.complex_id] = hash(epi_key) % 10000
-
     ids = [ann.complex_id for ann in annotations]
+
+    # Perform structural clustering
+    cluster_labels = _cluster_epitopes_by_structure(ids, cfg, rmsd_threshold=3.0)
+
     split = _cluster_split(ids, cluster_labels, cfg, seed=42)
     log.info("Epitope-group split: train=%d, val=%d, test=%d",
              len(split["train"]), len(split["val"]), len(split["test"]))
     return split
 
 
-def antigen_fold_split(df: pd.DataFrame, cfg: Config) -> dict[str, list[str]]:
-    """Split by antigen identity (proxy for fold).
+def _download_cath_domain_list(cfg: Config) -> Path:
+    """Download CATH domain list if not cached."""
+    cache_path = cfg.raw_dir / "cath-domain-list.txt"
 
-    Groups complexes by antigen sequence, so test has unseen antigens.
-    Full CATH classification requires external lookup.
+    if cache_path.exists():
+        log.info("Using cached CATH domain list: %s", cache_path)
+        return cache_path
+
+    log.info("Downloading CATH domain list from %s...", CATH_DOMAIN_LIST_URL)
+    cfg.raw_dir.mkdir(parents=True, exist_ok=True)
+    urllib.request.urlretrieve(CATH_DOMAIN_LIST_URL, cache_path)
+    log.info("Saved CATH domain list to %s", cache_path)
+
+    return cache_path
+
+
+def _parse_cath_domain_list(cath_path: Path) -> dict[str, str]:
+    """Parse CATH domain list into PDB chain -> superfamily mapping.
+
+    Returns dict mapping 'PDBID_CHAIN' -> 'C.A.T.H' superfamily code.
     """
-    # Group by antigen -- use antigen_name or antigen_chain + pdb combo
-    cluster_labels = {}
-    ag_groups = df.groupby("antigen_name").ngroups if "antigen_name" in df.columns else 0
+    pdb_chain_to_superfamily = {}
 
-    if "antigen_name" in df.columns:
-        name_to_id = {}
-        for _, row in df.iterrows():
-            cid = f"{row['pdb']}_{row['Hchain']}_{row['Lchain']}_{row['antigen_chain']}"
-            name = row["antigen_name"]
-            if name not in name_to_id:
-                name_to_id[name] = len(name_to_id)
-            cluster_labels[cid] = name_to_id[name]
-    else:
-        # Fallback: cluster by PDB antigen chain
-        for _, row in df.iterrows():
-            cid = f"{row['pdb']}_{row['Hchain']}_{row['Lchain']}_{row['antigen_chain']}"
-            cluster_labels[cid] = hash(row.get("compound", row["pdb"])) % 5000
+    with open(cath_path) as f:
+        for line in f:
+            if line.startswith("#"):
+                continue
+            parts = line.strip().split()
+            if len(parts) < 6:
+                continue
+
+            # Format: domain_id C A T H S O length resolution
+            # domain_id format: PDBIDChainDomain (e.g., 1oaiA00)
+            domain_id = parts[0]
+            if len(domain_id) < 5:
+                continue
+
+            pdb_id = domain_id[:4].upper()
+            chain = domain_id[4]
+
+            # Superfamily = C.A.T.H (first 4 levels)
+            c, a, t, h = parts[1], parts[2], parts[3], parts[4]
+            superfamily = f"{c}.{a}.{t}.{h}"
+
+            key = f"{pdb_id}_{chain}"
+            pdb_chain_to_superfamily[key] = superfamily
+
+    return pdb_chain_to_superfamily
+
+
+def _get_cath_superfamily_map(cfg: Config) -> dict[str, str]:
+    """Get PDB chain to CATH superfamily mapping."""
+    cath_path = _download_cath_domain_list(cfg)
+    return _parse_cath_domain_list(cath_path)
+
+
+def antigen_fold_split(df: pd.DataFrame, cfg: Config) -> dict[str, list[str]]:
+    """Split by CATH superfamily of the antigen chain.
+
+    Groups complexes by CATH superfamily so test set contains antigens
+    from different structural folds than training.
+    """
+    # Get CATH superfamily mapping
+    cath_map = _get_cath_superfamily_map(cfg)
+    log.info("Loaded CATH mapping for %d PDB chains", len(cath_map))
+
+    # Map complex IDs to CATH superfamilies
+    cluster_labels = {}
+    superfamily_to_id = {}
+    unmapped_count = 0
+
+    for _, row in df.iterrows():
+        cid = f"{row['pdb']}_{row['Hchain']}_{row['Lchain']}_{row['antigen_chain']}"
+        pdb_id = row["pdb"].upper()
+        ag_chain = row["antigen_chain"]
+
+        # Try to find CATH superfamily for antigen chain
+        key = f"{pdb_id}_{ag_chain}"
+        superfamily = cath_map.get(key)
+
+        if superfamily is not None:
+            if superfamily not in superfamily_to_id:
+                superfamily_to_id[superfamily] = len(superfamily_to_id)
+            cluster_labels[cid] = superfamily_to_id[superfamily]
+        else:
+            unmapped_count += 1
+            # Assign unique cluster for unmapped chains
+            cluster_labels[cid] = -(unmapped_count)
+
+    n_superfamilies = len(superfamily_to_id)
+    n_complexes = len(cluster_labels)
+    log.info("Mapped %d/%d complexes to %d CATH superfamilies (%d unmapped)",
+             n_complexes - unmapped_count, n_complexes, n_superfamilies, unmapped_count)
 
     ids = list(cluster_labels.keys())
     split = _cluster_split(ids, cluster_labels, cfg, seed=43)
