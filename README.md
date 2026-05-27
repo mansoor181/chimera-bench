@@ -261,7 +261,7 @@ chimera-bench/
 
 ### Split 2: Antigen-Fold (structural generalization)
 
-- Cluster antigens by CATH superfamily classification
+- Cluster antigens by structural similarity using Foldseek (TM-score ≥ 0.5)
 - Test set contains antigen folds absent from training
 - **Tests**: Can the method handle novel antigen topologies?
 
@@ -293,11 +293,11 @@ chimera-bench/
 - Epitopes with different sizes use geometric hash (center of mass + spread) for distance
 - Complexes without valid epitope coordinates (< 3 residues) assigned to singleton clusters
 
-**Antigen-Fold Clustering (CATH)**:
-- Source: CATH domain list (latest release from cathdb.info)
-- Grouping level: Superfamily (C.A.T.H - first 4 levels of CATH hierarchy)
-- Coverage: 139 unique superfamilies in train, 9 in test (8 unseen in train)
-- Unmapped chains: ~50% (peptide antigens, recent structures without CATH annotation) treated as singleton clusters
+**Antigen-Fold Clustering (Foldseek)**:
+- Method: Foldseek easy-cluster with TM-score ≥ 0.5 threshold (same fold)
+- Coverage: 99.9% (2918/2922 complexes mapped to 810 structural fold clusters)
+- Parameters: bidirectional coverage ≥ 50%, greedy set cover clustering
+- Replaces CATH superfamily grouping which only covered ~30% of chains
 
 **Temporal Split Cutoffs**:
 - Train: 1990-08-27 to 2024-05-08
