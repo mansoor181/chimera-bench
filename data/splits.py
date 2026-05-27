@@ -2,7 +2,9 @@
 
 import json
 import logging
-import urllib.request
+import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -13,8 +15,6 @@ from scipy.spatial.distance import squareform
 from benchmark.config import Config
 
 log = logging.getLogger(__name__)
-
-CATH_DOMAIN_LIST_URL = "http://download.cathdb.info/cath/releases/latest-release/cath-classification-data/cath-domain-list.txt"
 
 
 def _random_split(ids: list[str], cfg: Config,
@@ -285,99 +285,169 @@ def epitope_group_split(df: pd.DataFrame, annotations: list,
     return split
 
 
-def _download_cath_domain_list(cfg: Config) -> Path:
-    """Download CATH domain list if not cached."""
-    cache_path = cfg.raw_dir / "cath-domain-list.txt"
+def _extract_antigen_chains(df: pd.DataFrame, cfg: Config,
+                            out_dir: Path) -> dict[str, str]:
+    """Extract antigen chains from PDB files into individual PDB files.
 
-    if cache_path.exists():
-        log.info("Using cached CATH domain list: %s", cache_path)
-        return cache_path
-
-    log.info("Downloading CATH domain list from %s...", CATH_DOMAIN_LIST_URL)
-    cfg.raw_dir.mkdir(parents=True, exist_ok=True)
-    urllib.request.urlretrieve(CATH_DOMAIN_LIST_URL, cache_path)
-    log.info("Saved CATH domain list to %s", cache_path)
-
-    return cache_path
-
-
-def _parse_cath_domain_list(cath_path: Path) -> dict[str, str]:
-    """Parse CATH domain list into PDB chain -> superfamily mapping.
-
-    Returns dict mapping 'PDBID_CHAIN' -> 'C.A.T.H' superfamily code.
+    Returns dict mapping output filename (stem) -> complex_id.
+    Deduplicates by PDB+chain so Foldseek only clusters unique chains.
     """
-    pdb_chain_to_superfamily = {}
+    from Bio.PDB import PDBParser, PDBIO, Select
 
-    with open(cath_path) as f:
-        for line in f:
-            if line.startswith("#"):
+    class ChainSelect(Select):
+        def __init__(self, chain_id):
+            self.chain_id = chain_id
+
+        def accept_chain(self, chain):
+            return chain.id == self.chain_id
+
+    parser = PDBParser(QUIET=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Map unique PDB+chain to complex IDs that share it
+    pdb_chain_to_cids = {}
+    for _, row in df.iterrows():
+        cid = f"{row['pdb']}_{row['Hchain']}_{row['Lchain']}_{row['antigen_chain']}"
+        key = f"{row['pdb']}_{row['antigen_chain']}"
+        pdb_chain_to_cids.setdefault(key, []).append(cid)
+
+    # Extract one PDB file per unique antigen chain
+    filename_to_cids = {}
+    extracted = 0
+    for key, cids in pdb_chain_to_cids.items():
+        pdb_id, ag_chain = key.rsplit("_", 1)
+        pdb_path = cfg.structures_dir / f"{pdb_id}.pdb"
+        if not pdb_path.exists():
+            continue
+
+        out_path = out_dir / f"{key}.pdb"
+        if not out_path.exists():
+            structure = parser.get_structure(pdb_id, pdb_path)
+            model = structure[0]
+            if ag_chain not in model:
                 continue
-            parts = line.strip().split()
-            if len(parts) < 6:
-                continue
+            io = PDBIO()
+            io.set_structure(model)
+            io.save(str(out_path), ChainSelect(ag_chain))
 
-            # Format: domain_id C A T H S O length resolution
-            # domain_id format: PDBIDChainDomain (e.g., 1oaiA00)
-            domain_id = parts[0]
-            if len(domain_id) < 5:
-                continue
+        filename_to_cids[key] = cids
+        extracted += 1
 
-            pdb_id = domain_id[:4].upper()
-            chain = domain_id[4]
-
-            # Superfamily = C.A.T.H (first 4 levels)
-            c, a, t, h = parts[1], parts[2], parts[3], parts[4]
-            superfamily = f"{c}.{a}.{t}.{h}"
-
-            key = f"{pdb_id}_{chain}"
-            pdb_chain_to_superfamily[key] = superfamily
-
-    return pdb_chain_to_superfamily
+    log.info("Extracted %d unique antigen chains from %d complexes",
+             extracted, len(df))
+    return filename_to_cids
 
 
-def _get_cath_superfamily_map(cfg: Config) -> dict[str, str]:
-    """Get PDB chain to CATH superfamily mapping."""
-    cath_path = _download_cath_domain_list(cfg)
-    return _parse_cath_domain_list(cath_path)
+def _run_foldseek_cluster(pdb_dir: Path, cfg: Config) -> dict[str, int]:
+    """Run Foldseek easy-cluster on antigen chain PDB files.
+
+    Returns dict mapping PDB_CHAIN key -> cluster_id.
+    """
+    cache_path = cfg.raw_dir / "foldseek_clusters.tsv"
+    if cache_path.exists():
+        log.info("Using cached Foldseek clusters: %s", cache_path)
+        cluster_map = {}
+        cluster_name_to_id = {}
+        with open(cache_path) as f:
+            for line in f:
+                rep, member = line.strip().split("\t")
+                if rep not in cluster_name_to_id:
+                    cluster_name_to_id[rep] = len(cluster_name_to_id)
+                cluster_map[member] = cluster_name_to_id[rep]
+        log.info("Loaded %d chains in %d Foldseek clusters",
+                 len(cluster_map), len(cluster_name_to_id))
+        return cluster_map
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out_prefix = Path(tmpdir) / "foldseek_out"
+        tmp_dir = Path(tmpdir) / "tmp"
+        tmp_dir.mkdir()
+
+        cmd = [
+            "foldseek", "easy-cluster",
+            str(pdb_dir),
+            str(out_prefix),
+            str(tmp_dir),
+            "--min-seq-id", "0.0",       # cluster by structure, not sequence
+            "-c", "0.5",                  # 50% coverage threshold
+            "--cov-mode", "0",            # bidirectional coverage
+            "--cluster-mode", "0",        # greedy set cover
+            "--tmscore-threshold", "0.5", # TM-score ≥ 0.5 = same fold
+        ]
+
+        log.info("Running Foldseek clustering on %s ...", pdb_dir)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+        if result.returncode != 0:
+            raise RuntimeError(f"Foldseek failed:\n{result.stderr}")
+
+        # Parse cluster TSV (rep_name \t member_name)
+        cluster_tsv = Path(f"{out_prefix}_cluster.tsv")
+        cluster_map = {}
+        cluster_name_to_id = {}
+
+        with open(cluster_tsv) as f:
+            for line in f:
+                rep, member = line.strip().split("\t")
+                if rep not in cluster_name_to_id:
+                    cluster_name_to_id[rep] = len(cluster_name_to_id)
+                cluster_map[member] = cluster_name_to_id[rep]
+
+        # Cache results
+        cfg.raw_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(cluster_tsv, cache_path)
+
+    log.info("Foldseek: %d chains clustered into %d fold groups",
+             len(cluster_map), len(cluster_name_to_id))
+    return cluster_map
 
 
 def antigen_fold_split(df: pd.DataFrame, cfg: Config) -> dict[str, list[str]]:
-    """Split by CATH superfamily of the antigen chain.
+    """Split by structural fold of the antigen chain (Foldseek clustering).
 
-    Groups complexes by CATH superfamily so test set contains antigens
-    from different structural folds than training.
+    Extracts antigen chains, clusters them by structural similarity using
+    Foldseek (TM-score ≥ 0.5), then splits so test set contains antigens
+    from different structural folds than training. Achieves ~100% coverage
+    unlike CATH which only covers ~30% of PDB chains.
     """
-    # Get CATH superfamily mapping
-    cath_map = _get_cath_superfamily_map(cfg)
-    log.info("Loaded CATH mapping for %d PDB chains", len(cath_map))
+    # Extract antigen chains to temporary directory
+    ag_chain_dir = cfg.raw_dir / "antigen_chains"
+    filename_to_cids = _extract_antigen_chains(df, cfg, ag_chain_dir)
 
-    # Map complex IDs to CATH superfamilies
+    # Run Foldseek clustering
+    foldseek_clusters = _run_foldseek_cluster(ag_chain_dir, cfg)
+
+    # Map complex IDs to cluster labels
     cluster_labels = {}
-    superfamily_to_id = {}
-    unmapped_count = 0
+    mapped = 0
+    unmapped = 0
+    max_cluster_id = max(foldseek_clusters.values()) if foldseek_clusters else 0
 
-    for _, row in df.iterrows():
-        cid = f"{row['pdb']}_{row['Hchain']}_{row['Lchain']}_{row['antigen_chain']}"
-        pdb_id = row["pdb"].upper()
-        ag_chain = row["antigen_chain"]
-
-        # Try to find CATH superfamily for antigen chain
-        key = f"{pdb_id}_{ag_chain}"
-        superfamily = cath_map.get(key)
-
-        if superfamily is not None:
-            if superfamily not in superfamily_to_id:
-                superfamily_to_id[superfamily] = len(superfamily_to_id)
-            cluster_labels[cid] = superfamily_to_id[superfamily]
+    for pdb_chain_key, cids in filename_to_cids.items():
+        cluster_id = foldseek_clusters.get(pdb_chain_key)
+        if cluster_id is not None:
+            for cid in cids:
+                cluster_labels[cid] = cluster_id
+                mapped += 1
         else:
-            unmapped_count += 1
-            # Assign unique cluster for unmapped chains
-            cluster_labels[cid] = -(unmapped_count)
+            for cid in cids:
+                max_cluster_id += 1
+                cluster_labels[cid] = max_cluster_id
+                unmapped += 1
 
-    n_superfamilies = len(superfamily_to_id)
-    n_complexes = len(cluster_labels)
-    log.info("Mapped %d/%d complexes to %d CATH superfamilies (%d unmapped)",
-             n_complexes - unmapped_count, n_complexes, n_superfamilies, unmapped_count)
+    # Handle complexes not in filename_to_cids (missing PDB files)
+    all_cids = set(
+        f"{row['pdb']}_{row['Hchain']}_{row['Lchain']}_{row['antigen_chain']}"
+        for _, row in df.iterrows()
+    )
+    for cid in all_cids:
+        if cid not in cluster_labels:
+            max_cluster_id += 1
+            cluster_labels[cid] = max_cluster_id
+            unmapped += 1
+
+    n_clusters = len(set(cluster_labels.values()))
+    log.info("Mapped %d/%d complexes to %d Foldseek fold clusters (%d unmapped)",
+             mapped, mapped + unmapped, n_clusters, unmapped)
 
     ids = list(cluster_labels.keys())
     split = _cluster_split(ids, cluster_labels, cfg, seed=43)
