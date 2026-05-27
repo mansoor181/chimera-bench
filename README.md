@@ -285,7 +285,7 @@ chimera-bench/
 **Integrity Guarantees**:
 - No train/val/test overlap within any split (verified)
 - Clusters are never split across train and test (whole-cluster assignment)
-- Test sets differ across split types (~10-13% overlap between any two test sets)
+- Test sets differ across split types (~5-13% overlap between any two test sets)
 
 **Epitope-Group Clustering**:
 - Method: Kabsch RMSD on epitope CA coordinates with hierarchical clustering (average linkage)
@@ -335,25 +335,25 @@ Antigen size distribution (Train/Val/Test):
 
 | Subset | n | CDR-H3 Length | Epitope Size | Antigen Size |
 |--------|---|---------------|--------------|--------------|
-| Train | 2338 | 14.5 ± 4.2 [3-29] | 18.0 ± 6.9 [0-64] | 298.5 ± 284.1 [1-1853] |
-| Val | 292 | 14.9 ± 5.1 [5-63] | 17.4 ± 7.1 [1-46] | 262.6 ± 270.1 [1-2363] |
-| Test | 292 | 14.6 ± 4.1 [5-28] | 17.7 ± 7.1 [1-52] | 233.6 ± 228.2 [2-1265] |
+| Train | 2338 | 14.9 ± 4.3 [3-63] | 18.9 ± 6.5 [0-52] | 322.7 ± 278.5 [2-1190] |
+| Val | 292 | 13.2 ± 4.1 [4-24] | 14.5 ± 7.5 [1-64] | 147.1 ± 214.0 [1-1853] |
+| Test | 292 | 13.6 ± 4.0 [4-25] | 14.0 ± 7.4 [1-62] | 155.3 ± 248.6 [2-2363] |
 
 CDR-H3 length distribution (Train/Val/Test):
-- Short (<10): 8.6% / 9.2% / 8.6%
-- Medium (10-15): 56.1% / 51.4% / 52.7%
-- Long (16-20): 25.2% / 29.8% / 29.1%
-- Very Long (>20): 10.1% / 9.6% / 9.6%
+- Short (<10): 6.7% / 19.2% / 13.7%
+- Medium (10-15): 55.4% / 54.1% / 55.8%
+- Long (16-20): 26.7% / 21.6% / 25.3%
+- Very Long (>20): 11.2% / 5.1% / 5.1%
 
 Epitope size distribution (Train/Val/Test):
-- Small (<15): 31.3% / 33.2% / 37.0%
-- Medium (15-25): 55.8% / 55.5% / 49.7%
-- Large (>25): 12.9% / 11.3% / 13.4%
+- Small (<15): 25.4% / 57.2% / 59.9%
+- Medium (15-25): 60.2% / 34.2% / 35.3%
+- Large (>25): 14.3% / 8.6% / 4.8%
 
 Antigen size distribution (Train/Val/Test):
-- Small (<200): 50.7% / 57.2% / 62.7%
-- Medium (200-500): 35.1% / 32.9% / 29.1%
-- Large (>500): 14.2% / 9.9% / 8.2%
+- Small (<200): 47.4% / 72.6% / 74.0%
+- Medium (200-500): 37.9% / 21.9% / 17.1%
+- Large (>500): 14.7% / 5.5% / 8.9%
 
 #### Temporal Split
 
