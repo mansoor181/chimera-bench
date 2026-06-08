@@ -19,34 +19,14 @@ _BASELINES_DIR = Path(__file__).resolve().parent
 _SHARED_CONFIG_PATH = _BASELINES_DIR / "shared_config.yaml"
 
 
-def _resolve_env_vars(value):
-    """Resolve ${ENV_VAR} placeholders in a string."""
-    if isinstance(value, str) and "${" in value:
-        return os.path.expandvars(value)
-    return value
-
-
 def load_shared_config():
-    """Load the shared CHIMERA config from baselines/shared_config.yaml.
-
-    Path values containing ${CHIMERA_DATA_ROOT} are resolved from the
-    environment variable. Set it before calling any baseline code:
-        export CHIMERA_DATA_ROOT=/path/to/chimera-bench-v1.0
-    """
+    """Load the shared CHIMERA config from baselines/shared_config.yaml."""
     with open(_SHARED_CONFIG_PATH) as f:
-        cfg = yaml.safe_load(f)
-    # Resolve environment variables in paths
-    if "paths" in cfg:
-        for key, val in cfg["paths"].items():
-            cfg["paths"][key] = _resolve_env_vars(val)
-    return cfg
+        return yaml.safe_load(f)
 
 
 def get_data_root():
-    """Get the CHIMERA data root path from shared config or CHIMERA_DATA_ROOT env var."""
-    env = os.environ.get("CHIMERA_DATA_ROOT")
-    if env:
-        return Path(env)
+    """Get the CHIMERA data root path from shared config."""
     cfg = load_shared_config()
     return Path(cfg["paths"]["data_root"])
 
@@ -277,6 +257,10 @@ class ModelCheckpoint:
         self.mode = mode
         self.best_value = None
 
+    def reset_best(self):
+        """Reset best value to allow new best selection (for two-stage training)."""
+        self.best_value = None
+
     def save(self, model, optimizer, scheduler, epoch, val_metric):
         ckpt = {
             "model_state_dict": model.state_dict(),
@@ -367,42 +351,104 @@ def _ensure_numpy(x):
     return np.asarray(x)
 
 
-def compute_ca_contacts(ab_ca, ag_ca, cutoff=8.0):
-    """Compute residue-level contacts from symmetric CA-CA distances.
+def compute_contacts_from_atom14(ab_atom14_coords, ab_atom14_mask,
+                                 ag_atom14_coords, ag_atom14_mask,
+                                 cutoff=4.5):
+    """Compute epitope/paratope masks and contact pairs from atom14 coords.
 
     Args:
-        ab_ca: (N_ab, 3) antibody CA coordinates
-        ag_ca: (N_ag, 3) antigen CA coordinates
-        cutoff: CA-CA distance threshold in Angstroms (default 8.0)
+        ab_atom14_coords: (N_ab, 14, 3) antibody all-atom coords
+        ab_atom14_mask: (N_ab, 14) bool mask for valid atoms
+        ag_atom14_coords: (N_ag, 14, 3) antigen all-atom coords
+        ag_atom14_mask: (N_ag, 14) bool mask for valid atoms
+        cutoff: contact distance in Angstroms
 
     Returns:
         epitope_mask: (N_ag,) bool
         paratope_mask: (N_ab,) bool
         contact_pairs: set of (ab_residue_idx, ag_residue_idx)
     """
-    n_ab = len(ab_ca)
-    n_ag = len(ag_ca)
+    n_ab = len(ab_atom14_coords)
+    n_ag = len(ag_atom14_coords)
     epitope_mask = np.zeros(n_ag, dtype=bool)
     paratope_mask = np.zeros(n_ab, dtype=bool)
     contact_pairs = set()
 
-    if n_ab == 0 or n_ag == 0:
+    # Gather all valid antigen atoms with residue index
+    ag_atoms = []
+    ag_res_idx = []
+    for i in range(n_ag):
+        valid = ag_atom14_mask[i]
+        if valid.any():
+            ag_atoms.append(ag_atom14_coords[i][valid])
+            ag_res_idx.extend([i] * int(valid.sum()))
+    if not ag_atoms:
         return epitope_mask, paratope_mask, contact_pairs
+    ag_atoms = np.concatenate(ag_atoms, axis=0)
+    ag_res_idx = np.array(ag_res_idx)
+    ag_tree = cKDTree(ag_atoms)
 
-    tree = cKDTree(ag_ca)
-    for i, coord in enumerate(ab_ca):
-        for j in tree.query_ball_point(coord, cutoff):
-            paratope_mask[i] = True
-            epitope_mask[j] = True
-            contact_pairs.add((i, j))
+    # Query each antibody residue's atoms
+    for ab_i in range(n_ab):
+        valid = ab_atom14_mask[ab_i]
+        if not valid.any():
+            continue
+        ab_res_atoms = ab_atom14_coords[ab_i][valid]
+        for atom_coord in ab_res_atoms:
+            nearby = ag_tree.query_ball_point(atom_coord, cutoff)
+            if nearby:
+                paratope_mask[ab_i] = True
+                for idx in nearby:
+                    ag_j = ag_res_idx[idx]
+                    epitope_mask[ag_j] = True
+                    contact_pairs.add((ab_i, ag_j))
 
     return epitope_mask, paratope_mask, contact_pairs
 
 
-def load_native_complex(complex_id, feat_dir, cutoff=8.0):
-    """Load a native complex from complex_features and compute contacts.
+# -- CDR-specific CA-CA contact functions (corrected definitions) --
 
-    Contacts are computed using symmetric CA-CA distances at the given cutoff.
+CA_CUTOFF = 8.0  # Angstroms -- symmetric CA-CA contact threshold
+
+
+def compute_ca_contacts(ab_ca, ag_ca, cutoff=CA_CUTOFF):
+    """CA-CA contacts between antibody and antigen."""
+    if len(ab_ca) == 0 or len(ag_ca) == 0:
+        return set()
+    tree = cKDTree(ag_ca)
+    contacts = set()
+    for i, coord in enumerate(ab_ca):
+        for j in tree.query_ball_point(coord, cutoff):
+            contacts.add((i, j))
+    return contacts
+
+
+def compute_epitope_mask_ca(ab_ca, ag_ca, cutoff=CA_CUTOFF):
+    """Epitope mask: antigen residues within cutoff of any antibody CA."""
+    if len(ab_ca) == 0 or len(ag_ca) == 0:
+        return np.zeros(len(ag_ca), dtype=bool)
+    tree = cKDTree(ag_ca)
+    mask = np.zeros(len(ag_ca), dtype=bool)
+    for coord in ab_ca:
+        for j in tree.query_ball_point(coord, cutoff):
+            mask[j] = True
+    return mask
+
+
+def epitope_f1_score(true_mask, pred_mask):
+    """F1 between true and predicted epitope masks."""
+    true_set = set(np.where(true_mask)[0])
+    pred_set = set(np.where(pred_mask)[0])
+    if not pred_set and not true_set:
+        return 1.0
+    tp = len(pred_set & true_set)
+    prec = tp / len(pred_set) if pred_set else 0.0
+    rec = tp / len(true_set) if true_set else 0.0
+    return 2 * prec * rec / (prec + rec) if (prec + rec) > 0 else 0.0
+
+
+def load_native_complex(complex_id, feat_dir, cutoff=4.5):
+    """Load a native complex from complex_features and compute contacts.
 
     Returns:
         dict with keys: complex_id, true_sequence, ab_ca_coords, ag_ca_coords,
@@ -421,8 +467,19 @@ def load_native_complex(complex_id, feat_dir, cutoff=8.0):
     l_seq = feat["light_sequence"]
     full_seq = h_seq + l_seq
 
-    epitope_mask, paratope_mask, contact_pairs = compute_ca_contacts(
-        ab_ca, ag_ca, cutoff=cutoff,
+    # Build atom14 for antibody (concat heavy + light)
+    h_a14 = _ensure_numpy(feat["heavy_atom14_coords"])
+    h_m14 = _ensure_numpy(feat["heavy_atom14_mask"])
+    l_a14 = _ensure_numpy(feat["light_atom14_coords"])
+    l_m14 = _ensure_numpy(feat["light_atom14_mask"])
+    ab_a14 = np.concatenate([h_a14, l_a14], axis=0)
+    ab_m14 = np.concatenate([h_m14, l_m14], axis=0)
+
+    ag_a14 = _ensure_numpy(feat["antigen_atom14_coords"])
+    ag_m14 = _ensure_numpy(feat["antigen_atom14_mask"])
+
+    epitope_mask, paratope_mask, contact_pairs = compute_contacts_from_atom14(
+        ab_a14, ab_m14, ag_a14, ag_m14, cutoff=cutoff,
     )
 
     return {
@@ -439,7 +496,7 @@ def load_native_complex(complex_id, feat_dir, cutoff=8.0):
     }
 
 
-def load_natives(split_name, data_root=None, split_type="test", cutoff=8.0):
+def load_natives(split_name, data_root=None, split_type="test", cutoff=4.5):
     """Load native complexes for a split.
 
     Returns:
@@ -533,10 +590,9 @@ def evaluate_prediction_full(pred_data, native, cdr_type, feat,
     repo_root = baselines_dir.parent
     if str(repo_root) not in sys.path:
         sys.path.insert(0, str(repo_root))
-    from evaluation.metrics import (
+    from benchmark.evaluation.metrics import (
         aar, caar, kabsch_rmsd, tm_score, fnat, interface_rmsd,
-        dockq_score, epitope_metrics, compute_epitope_mask,
-        count_liabilities, chimera_s, chimera_b,
+        dockq_score, count_liabilities, chimera_s, chimera_b,
     )
 
     result = {"complex_id": native["complex_id"], "cdr_type": cdr_type}
@@ -562,14 +618,6 @@ def evaluate_prediction_full(pred_data, native, cdr_type, feat,
 
     # Group 1: Sequence
     result["aar"] = aar(pred_seq, true_seq) if pred_seq and true_seq else 0.0
-
-    paratope_full = native["paratope_mask"]
-    if len(cdr_indices) > 0 and len(paratope_full) > 0:
-        cdr_paratope = paratope_full[cdr_indices]
-        result["caar"] = caar(pred_seq, true_seq, cdr_paratope) if pred_seq and true_seq else 0.0
-    else:
-        result["caar"] = 0.0
-
     result["ppl"] = float(pred_data.get("ppl", 0.0))
     result["n_liabilities"] = count_liabilities(pred_seq) if pred_seq else 0
 
@@ -577,71 +625,81 @@ def evaluate_prediction_full(pred_data, native, cdr_type, feat,
     result["rmsd"] = 0.0
     result["tm_score"] = 0.0
     if pred_coords is not None and true_coords is not None and len(pred_coords) > 0:
-        result["rmsd"] = kabsch_rmsd(pred_coords, true_coords)
-        result["tm_score"] = tm_score(pred_coords, true_coords)
+        try:
+            result["rmsd"] = kabsch_rmsd(pred_coords, true_coords)
+            result["tm_score"] = tm_score(pred_coords, true_coords)
+        except np.linalg.LinAlgError:
+            result["rmsd"] = float('inf')
+            result["tm_score"] = 0.0
 
     # Full antibody coords: copy native, replace CDR positions with predictions
     # Kabsch-align pred_coords to true_coords to handle coordinate frame mismatch
     pred_ab_full = None
     if pred_coords is not None and len(cdr_indices) == len(pred_coords):
-        # Align pred_coords to true_coords (from prediction file) if they're in different frames
         if true_coords is not None and len(true_coords) == len(pred_coords):
-            # Check if alignment is needed (large coordinate difference suggests different frames)
             coord_diff = np.abs(pred_coords - true_coords).max()
-            if coord_diff > 10.0:  # More than 10A diff suggests different coord frames
-                # Kabsch-align pred to true
+            if coord_diff > 10.0:
                 centroid_p = pred_coords.mean(axis=0)
                 centroid_t = true_coords.mean(axis=0)
                 p_centered = pred_coords - centroid_p
                 t_centered = true_coords - centroid_t
                 H = p_centered.T @ t_centered
-                U, S, Vt = np.linalg.svd(H)
-                R = Vt.T @ U.T
-                if np.linalg.det(R) < 0:
-                    Vt[-1, :] *= -1
+                try:
+                    U, S, Vt = np.linalg.svd(H)
                     R = Vt.T @ U.T
-                pred_coords = (pred_coords - centroid_p) @ R.T + centroid_t
+                    if np.linalg.det(R) < 0:
+                        Vt[-1, :] *= -1
+                        R = Vt.T @ U.T
+                    pred_coords = (pred_coords - centroid_p) @ R.T + centroid_t
+                except np.linalg.LinAlgError:
+                    pass  # skip alignment, use unaligned coords
         pred_ab_full = construct_pred_ab_full_coords(pred_coords, cdr_indices, ab_ca)
 
-    # CDR-specific filtering: only count contacts where the antibody partner
-    # is a CDR residue. Framework contacts are trivially preserved by
-    # construct_pred_ab_full_coords and would dominate the metrics.
-    cdr_set = set(cdr_indices.tolist()) if len(cdr_indices) > 0 else set()
+    # -- CDR-specific CA-CA 8A contacts (corrected definitions) --
+    cdr_set = set(cdr_indices.tolist()) if hasattr(cdr_indices, 'tolist') else set(cdr_indices)
 
-    # Group 4: Epitope specificity (CDR-specific)
-    result["epitope_precision"] = 0.0
-    result["epitope_recall"] = 0.0
+    # Compute CA-CA 8A contacts, restricted to CDR residues
+    true_contacts = compute_ca_contacts(ab_ca, ag_ca, CA_CUTOFF)
+    true_cdr_contacts = {(i, j) for i, j in true_contacts if i in cdr_set}
+
+    # CAAR: AAR restricted to CDR residues that contact antigen
+    true_paratope = np.zeros(len(ab_ca), dtype=bool)
+    for ab_i, _ in true_cdr_contacts:
+        true_paratope[ab_i] = True
+    cdr_paratope = true_paratope[cdr_indices]
+    result["caar"] = caar(pred_seq, true_seq, cdr_paratope) if pred_seq and true_seq else 0.0
+
+    # Group 4: Epitope specificity (CDR-specific CA-CA 8A)
     result["epitope_f1"] = 0.0
-    if pred_ab_full is not None and len(ag_ca) > 0 and len(cdr_indices) > 0:
-        # CDR-specific: only antigen residues contacted by CDR residues
-        true_epi_mask = compute_epitope_mask(ab_ca[cdr_indices], ag_ca, cutoff=8.0)
-        epi = epitope_metrics(pred_ab_full[cdr_indices], ag_ca, true_epi_mask)
-        result.update(epi)
+    if pred_ab_full is not None and len(ag_ca) > 0:
+        true_cdr_ca = ab_ca[cdr_indices]
+        pred_cdr_ca = pred_ab_full[cdr_indices]
+        true_epi = compute_epitope_mask_ca(true_cdr_ca, ag_ca, CA_CUTOFF)
+        pred_epi = compute_epitope_mask_ca(pred_cdr_ca, ag_ca, CA_CUTOFF)
+        result["epitope_f1"] = epitope_f1_score(true_epi, pred_epi)
 
-    # Group 3: Interface (CDR-specific contacts)
+    # Group 3: Interface (CDR-specific CA-CA 8A)
     result["fnat"] = 0.0
     result["irmsd"] = float("inf")
     result["dockq"] = 0.0
-    if pred_ab_full is not None and cdr_set:
-        # Full CA-CA 8A contacts, then filter to CDR-specific
-        all_true = native["contact_pairs"]
-        _, _, all_pred = compute_ca_contacts(pred_ab_full, ag_ca, cutoff=8.0)
+    if pred_ab_full is not None and true_cdr_contacts:
+        pred_contacts = compute_ca_contacts(pred_ab_full, ag_ca, CA_CUTOFF)
+        pred_cdr_contacts = {(i, j) for i, j in pred_contacts if i in cdr_set}
 
-        true_cdr_contacts = {(i, j) for i, j in all_true if i in cdr_set}
-        pred_cdr_contacts = {(i, j) for i, j in all_pred if i in cdr_set}
+        fnat_val = fnat(pred_cdr_contacts, true_cdr_contacts)
+        result["fnat"] = fnat_val
 
-        if true_cdr_contacts:
-            fnat_val = fnat(pred_cdr_contacts, true_cdr_contacts)
-            result["fnat"] = fnat_val
+        irmsd_val = interface_rmsd(
+            pred_ab_full, ag_ca, ab_ca, ag_ca,
+            list(true_cdr_contacts),
+        )
+        result["irmsd"] = irmsd_val
 
-            irmsd_val = interface_rmsd(
-                pred_ab_full, ag_ca, ab_ca, ag_ca,
-                list(true_cdr_contacts),
-            )
-            result["irmsd"] = irmsd_val
-
+        try:
             lrmsd = kabsch_rmsd(pred_ab_full, ab_ca)
-            result["dockq"] = dockq_score(fnat_val, irmsd_val, lrmsd)
+        except np.linalg.LinAlgError:
+            lrmsd = float('inf')
+        result["dockq"] = dockq_score(fnat_val, irmsd_val, lrmsd)
 
     # Composites
     result["chimera_s"] = chimera_s(
@@ -675,7 +733,7 @@ def run_full_evaluation(pred_dir, split_name, data_root=None, cdr_type_hint=None
     repo_root = baselines_dir.parent
     if str(repo_root) not in sys.path:
         sys.path.insert(0, str(repo_root))
-    from evaluation.metrics import mean_std
+    from benchmark.evaluation.metrics import mean_std
 
     pred_dir = Path(pred_dir)
     root = Path(data_root) if data_root else get_data_root()

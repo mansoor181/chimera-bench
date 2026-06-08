@@ -37,6 +37,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import lmdb
+import numpy as np
 import torch
 from tqdm import tqdm
 
@@ -185,18 +186,19 @@ def build_lmdb(entries, chothia_dir, lmdb_path):
     return succeeded_ids
 
 
-def extract_cdr_sequences(lmdb_path, complex_ids):
-    """Extract per-CDR sequences from LMDB structures.
+def extract_cdr_data(lmdb_path, complex_ids):
+    """Extract per-CDR sequences AND backbone coords from LMDB structures.
 
-    Returns: dict {cdr_enum: {pdb_code: [seq_str, ...]}}
+    Returns: dict {cdr_enum: {pdb_code: [(seq_str, ca_coords), ...]}}
+        where ca_coords is a numpy array of shape (L, 3)
     """
-    cdr_seqs = {cdr: defaultdict(list) for cdr in CDR_TO_FASTA}
+    cdr_data = {cdr: defaultdict(list) for cdr in CDR_TO_FASTA}
 
     db_conn = lmdb.open(lmdb_path, map_size=MAP_SIZE, create=False,
                         subdir=False, readonly=True, lock=False)
 
     with db_conn.begin() as txn:
-        for cid in tqdm(complex_ids, desc="Extract CDR seqs"):
+        for cid in tqdm(complex_ids, desc="Extract CDR data"):
             raw = txn.get(cid.encode("utf-8"))
             if raw is None:
                 continue
@@ -212,7 +214,8 @@ def extract_cdr_sequences(lmdb_path, complex_ids):
                     continue
                 cdr_flag = chain_data.get("cdr_flag")
                 aa = chain_data.get("aa")
-                if cdr_flag is None or aa is None:
+                pos = chain_data.get("pos_heavyatom")
+                if cdr_flag is None or aa is None or pos is None:
                     continue
 
                 for cdr_enum in cdr_enums:
@@ -222,47 +225,95 @@ def extract_cdr_sequences(lmdb_path, complex_ids):
                     seq = "".join(AA_INDEX_TO_ONE.get(a.item(), "X")
                                  for a in aa[mask])
                     if 5 <= len(seq) <= 30:
-                        cdr_seqs[cdr_enum][pdb_code].append(seq)
+                        ca_coords = pos[mask, 1].numpy()  # CA at atom index 1
+                        cdr_data[cdr_enum][pdb_code].append((seq, ca_coords))
 
     db_conn.close()
-    return cdr_seqs
+    return cdr_data
 
 
-def build_ref_fasta(cdr_seqs, output_dir):
-    """Build per-CDR reference FASTA files from extracted sequences."""
+def _cdr_backbone_rmsd(coords_a, coords_b):
+    """Compute CA backbone RMSD between two CDR fragments after Kabsch alignment.
+
+    Returns inf if lengths differ.
+    """
+    if len(coords_a) != len(coords_b):
+        return float("inf")
+    if len(coords_a) == 0:
+        return float("inf")
+
+    # Center
+    ca = coords_a - coords_a.mean(axis=0)
+    cb = coords_b - coords_b.mean(axis=0)
+
+    # Kabsch: find optimal rotation
+    H = ca.T @ cb
+    U, S, Vt = np.linalg.svd(H)
+    d = np.sign(np.linalg.det(Vt.T @ U.T))
+    D = np.diag([1.0, 1.0, d])
+    R = Vt.T @ D @ U.T
+
+    ca_aligned = ca @ R.T
+    rmsd = np.sqrt(np.mean(np.sum((ca_aligned - cb) ** 2, axis=1)))
+    return rmsd
+
+
+def build_ref_fasta(cdr_data, output_dir, train_pdbs=None):
+    """Build per-CDR reference FASTA files ranked by backbone RMSD similarity.
+
+    For each PDB (train or test), writes the top-30 most structurally similar
+    CDR sequences from train PDBs only. This mimics RADAb's original MASTER
+    structural search but uses pairwise CA RMSD within the CHIMERA dataset.
+
+    Args:
+        cdr_data: dict {cdr_enum: {pdb_code: [(seq, ca_coords), ...]}}
+        output_dir: directory to write FASTA files
+        train_pdbs: set of PDB codes allowed as retrieval sources (train only).
+                    If None, all PDBs are used.
+    """
     os.makedirs(output_dir, exist_ok=True)
 
     for cdr_enum, fasta_name in CDR_TO_FASTA.items():
         fasta_path = os.path.join(output_dir, fasta_name)
-        pdb_seqs = cdr_seqs[cdr_enum]
+        pdb_data = cdr_data[cdr_enum]
+        all_pdbs = sorted(pdb_data.keys())
 
-        # Collect all sequences (from ALL PDBs) for cross-referencing
-        all_seqs = []
-        for pdb_code, seqs in pdb_seqs.items():
-            all_seqs.extend(seqs)
+        # Build flat list of (pdb_code, seq, coords) for train PDBs only
+        train_entries = []
+        for pdb_code in all_pdbs:
+            if train_pdbs is not None and pdb_code not in train_pdbs:
+                continue
+            for seq, coords in pdb_data[pdb_code]:
+                train_entries.append((pdb_code, seq, coords))
+
+        log.info("  %s: %d PDBs, %d train entries for retrieval",
+                 fasta_name, len(all_pdbs), len(train_entries))
 
         with open(fasta_path, "w") as f:
-            for pdb_code in sorted(pdb_seqs.keys()):
-                f.write(f">{pdb_code}\n")
-                # Write this PDB's own sequences first
-                for seq in pdb_seqs[pdb_code]:
-                    f.write(f"{seq}\n")
-                # Add sequences from other PDBs (up to 30 total)
-                added = len(pdb_seqs[pdb_code])
-                for other_pdb, other_seqs in pdb_seqs.items():
-                    if other_pdb == pdb_code:
-                        continue
-                    for seq in other_seqs:
-                        if added >= 30:
-                            break
-                        f.write(f"{seq}\n")
-                        added += 1
-                    if added >= 30:
-                        break
+            for query_pdb in tqdm(all_pdbs, desc=fasta_name, leave=False):
+                f.write(f">{query_pdb}\n")
 
-        n_pdbs = len(pdb_seqs)
-        n_seqs = sum(len(v) for v in pdb_seqs.values())
-        log.info("  %s: %d PDBs, %d sequences", fasta_name, n_pdbs, n_seqs)
+                # Get query CDR coords (use first complex's CDR for this PDB)
+                query_entries = pdb_data[query_pdb]
+                query_seq, query_coords = query_entries[0]
+
+                # Write native sequence first (expected by retrieval function)
+                f.write(f"{query_seq}\n")
+
+                # Score all train entries by RMSD to query
+                scored = []
+                for t_pdb, t_seq, t_coords in train_entries:
+                    if t_pdb == query_pdb:
+                        continue  # exclude self
+                    rmsd = _cdr_backbone_rmsd(query_coords, t_coords)
+                    scored.append((rmsd, t_seq))
+
+                # Sort by RMSD (most similar first), take top 29 (native already written)
+                scored.sort(key=lambda x: x[0])
+                for _, seq in scored[:29]:
+                    f.write(f"{seq}\n")
+
+        log.info("  %s: wrote FASTA for %d PDBs", fasta_name, len(all_pdbs))
 
 
 def main():
@@ -315,22 +366,24 @@ def main():
         json.dump(cid_to_idx, f, indent=2)
 
     # Step 5: Build per-split reference FASTA files for retrieval.
-    # Use ALL complexes (train+val+test) so every PDB has retrieval entries.
-    # The original RADAb uses all of SAbDab for retrieval -- this is CDR-level
-    # sequence retrieval from other antibodies, not data leakage.  The test-time
-    # retrieval function (_get_retrieved_2) already excludes the native sequence.
+    # Extract CDR data (sequences + backbone coords) from ALL complexes.
+    # Then for each split, write FASTA with sequences ranked by backbone RMSD
+    # similarity, using ONLY train complexes as retrieval sources.
     available_ids = set(idx_to_cid)
-    for split_name in ["epitope_group", "antigen_fold", "temporal"]:
-        log.info("Building reference FASTA for split=%s...", split_name)
-        split_ids = load_split_ids(split_name, data_root)
-        all_ids = [cid for subset in ("train", "val", "test")
-                   for cid in split_ids.get(subset, [])
-                   if cid in available_ids]
-        log.info("  All complexes for FASTA: %d", len(all_ids))
+    all_available = [cid for cid in idx_to_cid if cid in available_ids]
+    log.info("Extracting CDR data from %d complexes...", len(all_available))
+    cdr_data = extract_cdr_data(lmdb_path, all_available)
 
-        cdr_seqs = extract_cdr_sequences(lmdb_path, all_ids)
+    for split_name in ["epitope_group", "antigen_fold", "temporal"]:
+        log.info("Building RMSD-ranked FASTA for split=%s...", split_name)
+        split_ids = load_split_ids(split_name, data_root)
+        train_ids = [cid for cid in split_ids.get("train", [])
+                     if cid in available_ids]
+        train_pdbs = set(cid[:4].lower() for cid in train_ids)
+        log.info("  Train PDBs for retrieval: %d", len(train_pdbs))
+
         fasta_dir = os.path.join(output_dir, "ref_seqs", split_name)
-        build_ref_fasta(cdr_seqs, fasta_dir)
+        build_ref_fasta(cdr_data, fasta_dir, train_pdbs=train_pdbs)
 
     log.info("RADAb preprocessing complete.")
 

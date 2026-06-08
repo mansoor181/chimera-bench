@@ -100,3 +100,13 @@ GPU=0 bash chimera_train.sh
 | `chimera_trainer.py` | Train + inference + per-sample metrics |
 | `chimera_evaluate.py` | Full 14-metric evaluation with bootstrap CIs |
 | `chimera_train.sh` | Run all splits end-to-end |
+
+### Data Fix [05-28-2026]
+
+**CRITICAL: 75% data loss in preprocessing.** The original `preprocess.py` used full-chain
+sequences (~212 residues for heavy chain) but variable-domain-only CDR masks (~117 residues).
+The length mismatch check (`len(cdr_str) != len(ab_seq)`) caused 2189/2941 complexes to be
+silently skipped, leaving only 752 complexes for training.
+
+**Fix**: Truncate heavy/light chain sequences and coordinates to variable domain length
+(matching CDR mask length) before concatenation. Now 2941/2941 complexes pass preprocessing.

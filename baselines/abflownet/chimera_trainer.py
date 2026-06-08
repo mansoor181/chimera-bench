@@ -19,6 +19,7 @@ import logging
 import os
 import pickle
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -464,6 +465,7 @@ def main():
     n_params = sum(p.numel() for p in model.parameters())
     log.info("Model parameters: %d (%.1fM)", n_params, n_params / 1e6)
 
+    train_t0 = time.time()
     if c.test_only:
         ckpt_path = c.checkpoint
         if ckpt_path is None:
@@ -571,7 +573,10 @@ def main():
         else:
             log.info("No best checkpoint found, using current model state for test")
 
+    train_time_s = time.time() - train_t0
+
     # Test inference
+    infer_t0 = time.time()
     log.info("Running test inference...")
     all_predictions = run_test_inference(model, datasets["test"], device, c)
 
@@ -617,6 +622,13 @@ def main():
                         row[k] = ""
                 writer.writerow(row)
     log.info("Saved test metrics CSV to %s", csv_path)
+
+    # Save timing
+    infer_time_s = time.time() - infer_t0
+    timing_path = save_dir / "timing.json"
+    with open(timing_path, "w") as f:
+        json.dump({"train_time_s": train_time_s, "infer_time_s": infer_time_s}, f, indent=2)
+    log.info("Timing: train=%.1fs, infer=%.1fs", train_time_s, infer_time_s)
 
     # Print test summary per CDR
     print("\nTest results:")

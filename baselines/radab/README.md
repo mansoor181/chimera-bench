@@ -22,7 +22,7 @@ Five files added for CHIMERA-Bench retraining and evaluation:
 | File | Description |
 |------|-------------|
 | `config.yaml` | Model type `diffanti`, 200K iters, batch_size 16, seed 2024. ESM-2 650M loaded automatically. |
-| `preprocess.py` | Chothia renumbering -> LMDB via RADAb's `preprocess_sabdab_structure()`. Also builds per-split reference FASTA files from training CDR sequences for the retrieval system. |
+| `preprocess.py` | Chothia renumbering -> LMDB via RADAb's `preprocess_sabdab_structure()`. Also builds per-split reference FASTA files with RMSD-ranked structural homologs for the retrieval system. |
 | `chimera_trainer.py` | Multi-CDR trainer. Monkey-patches RADAb's hardcoded FASTA paths to use split-specific reference files. `model(batch)` returns `loss_dict` directly. |
 | `chimera_evaluate.py` | `--predictions` (single CDR) or `--aggregate` (all CDRs per split). 12-metric CSV output. |
 | `chimera_train.sh` | Trains once per split, runs `eval_and_append` after each with `--aggregate`. |
@@ -30,7 +30,7 @@ Five files added for CHIMERA-Bench retraining and evaluation:
 **Key differences from DiffAb/AbFlowNet/AbMEGD:**
 - **Package location**: code lives in `src/diffab/` (not top-level)
 - **Model type**: `diffanti` (not `diffab`)
-- **Retrieval system**: Uses per-CDR FASTA files for MSA-augmented generation. CHIMERA builds split-specific FASTA files from training CDR sequences to prevent test leakage.
+- **Retrieval system**: Uses per-CDR FASTA files for MSA-augmented generation. CHIMERA builds split-specific FASTA files with RMSD-ranked structural homologs (replacing MASTER search) to prevent test leakage.
 - **ESM-2 650M**: Loaded inside `FullDPM.__init__()` (hardcoded to CUDA). No separate download needed -- `esm` library handles it.
 - **MSA transformer**: Refines predictions using retrieved reference sequences
 - **Extra batch keys**: `pdb_id` (4-char PDB code tensor), `cdr_to_mask` (CDR type indicator)
@@ -75,5 +75,26 @@ list(keys)[list(values).index(res)] for every single residue.
 anyway.
 6. pin_memory=True on DataLoaders
 
-note: still requires ~50 GB 
+note: still requires ~50 GB
+
+### Retrieval Pipeline Fix [05-28-2026]
+
+The original CHIMERA integration built FASTA files by extracting CDR sequences from training PDBs without
+any similarity ranking. The MSA transformer received essentially random sequences instead of structural
+homologs, degrading performance below vanilla DiffAb.
+
+**Root cause**: The original paper uses MASTER structural search to find CDR backbone homologs, but MASTER
+requires ~100 GPU-hours of precomputation. The initial CHIMERA integration skipped this, filling FASTA files
+with arbitrary CDR sequences from training PDBs.
+
+**Fix**: Replaced random sequence selection with CDR backbone CA RMSD ranking via Kabsch alignment:
+1. Extract CDR backbone CA coordinates from all complexes (from CHIMERA complex_features)
+2. For each query CDR, compute pairwise RMSD against all training CDR backbones (~5 min total)
+3. Rank by ascending RMSD, write top-29 most similar sequences + native sequence (30 total per FASTA entry)
+4. All PDBs get FASTA entries, but retrieval sources are restricted to train-split PDBs only
+
+This approximates MASTER's structural homolog retrieval at a fraction of the compute cost.
+
+**Additional fix**: FASTA files on disk previously contained test/val PDB sequences as retrieval sources
+(data leakage). Now strictly train-only.
 

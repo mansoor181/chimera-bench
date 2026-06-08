@@ -42,7 +42,7 @@ from chimera_utils import (
 
 # CHIMERA evaluation metrics
 sys.path.insert(0, os.path.join(_SCRIPT_DIR, "..", ".."))
-from evaluation.metrics import (
+from benchmark.evaluation.metrics import (
     aar as chimera_aar, kabsch_rmsd, tm_score as chimera_tm_score,
     count_liabilities,
 )
@@ -373,6 +373,7 @@ def main():
         state = torch.load(ckpt_path, map_location=device)
         model.load_state_dict(state["model_state_dict"])
         wandb_run = None
+        train_time_s = 0.0
     else:
         # Optimizer
         optimizer = torch.optim.Adam(model.parameters(), lr=c.lr)
@@ -385,6 +386,7 @@ def main():
         wandb_run = setup_wandb(c.wandb_project, run_name, vars(c), enabled=c.use_wandb)
 
         # Training loop
+        train_t0 = time.time()
         for epoch in range(c.max_epoch):
             t0 = time.time()
 
@@ -401,12 +403,15 @@ def main():
                   f"train_ppl={train_ppl:.2f} val_ppl={val_ppl:.3f} "
                   f"val_rmsd={val_rmsd:.3f} {'*' if is_best else ''} [{elapsed:.0f}s]")
 
+            lr = optimizer.param_groups[0]["lr"]
             log_dict = {
                 "epoch": epoch,
                 "train_loss": train_loss,
+                "val_loss": val_ppl,
                 "train_ppl": train_ppl,
                 "val_ppl": val_ppl,
                 "val_rmsd": val_rmsd,
+                "lr": lr,
             }
             if wandb_run:
                 wandb_run.log(log_dict)
@@ -415,10 +420,13 @@ def main():
                 print(f"Early stopping at epoch {epoch}")
                 break
 
+        train_time_s = time.time() - train_t0
+
         # Load best model for test
         print("Loading best model for test...")
         ckpt.load_best(model, device)
 
+    infer_t0 = time.time()
     test_ppl, test_rmsd = evaluate_ppl_rmsd(model, test_loader, c.cdr_type)
     print(f"Test PPL = {test_ppl:.3f}, Test RMSD = {test_rmsd:.3f}")
 
@@ -427,10 +435,17 @@ def main():
         model, test_data.data, c.cdr_type, cid_lookup={},
     )
 
+    infer_time_s = time.time() - infer_t0
+
     # Save predictions to per-CDR subdirectory
     pred_dir = os.path.join(save_dir, "predictions", cdr_label)
     save_predictions(predictions, pred_dir)
     print(f"Saved {len(predictions)} predictions to {pred_dir}")
+
+    # Save timing
+    timing = {"train_time_s": train_time_s, "infer_time_s": infer_time_s}
+    with open(os.path.join(save_dir, "timing.json"), "w") as f:
+        json.dump(timing, f)
 
     # Run full CHIMERA evaluation (all 12 metrics)
     numbering_scheme = cfg.get("numbering_scheme", "chothia")

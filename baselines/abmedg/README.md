@@ -54,6 +54,15 @@ Five files added for CHIMERA-Bench retraining and evaluation:
 - No TB loss -- `model.forward(batch)` takes only batch (simpler than AbFlowNet)
 - 400K iters (vs 200K), batch_size 8 (vs 16), seed 2024
 
+### Audit Fixes [05-28-2026]
+
+1. **Missing `import numpy as np`** in `chimera_trainer.py`. Caused crash during test inference
+   when converting coordinates.
+
+2. **Missing gradient accumulation.** Original AbMEGD uses `accumulation_steps=2` (effective
+   batch_size 16 from nominal 8). The CHIMERA trainer was missing this, halving the effective
+   batch size. Fixed by adding 2-step gradient accumulation in the training loop.
+
 **Usage:**
 ```bash
 cd baselines/abmedg

@@ -439,22 +439,26 @@ class EfficientMCAttModel(MCAttModel):
             S[mask] = torch.multinomial(prob, num_samples=1).squeeze()
         snll_all = self.seq_loss(logits, S[mask])
 
-        return snll_all, S, X, true_X, cdr_range
+        return snll_all, S, X, true_X, cdr_range, logits
 
     def infer(self, batch, device, greedy=True):
         X, S, L, offsets = batch['X'].to(device), batch['S'].to(device), batch['L'], batch['offsets'].to(device)
-        snll_all, pred_S, pred_X, true_X, cdr_range = self.generate(
+        snll_all, pred_S, pred_X, true_X, cdr_range, logits = self.generate(
             X, S, L, offsets, greedy=greedy
         )
         pred_S, cdr_range = pred_S.tolist(), cdr_range.tolist()
         pred_X, true_X = pred_X.cpu().numpy(), true_X.cpu().numpy()
-        # seqs, x, true_x
-        seq, x, true_x = [], [], []
+        # seqs, x, true_x, logits_list
+        seq, x, true_x, logits_list = [], [], [], []
+        logit_offset = 0
         for start, end in cdr_range:
             end = end + 1
+            length = end - start
             seq.append(''.join([VOCAB.idx_to_symbol(pred_S[i]) for i in range(start, end)]))
             x.append(pred_X[start:end])
             true_x.append(true_X[start:end])
+            logits_list.append(logits[logit_offset:logit_offset + length].detach().cpu())
+            logit_offset += length
         # ppl
         ppl = [0 for _ in range(len(cdr_range))]
         lens = [0 for _ in ppl]
@@ -467,7 +471,7 @@ class EfficientMCAttModel(MCAttModel):
             lens[i] = length
         ppl = [p / n for p, n in zip(ppl, lens)]
         ppl = torch.exp(torch.tensor(ppl, device=device)).tolist()
-        return ppl, seq, x, true_x, True
+        return ppl, seq, x, true_x, logits_list
 
     def generate_analyze(self, X, S, L, offsets, greedy=True):
         '''

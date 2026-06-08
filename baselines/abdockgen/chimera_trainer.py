@@ -46,7 +46,7 @@ from chimera_utils import (
 )
 
 sys.path.insert(0, os.path.join(_SCRIPT_DIR, "..", ".."))
-from evaluation.metrics import (
+from benchmark.evaluation.metrics import (
     aar as chimera_aar, kabsch_rmsd, tm_score as chimera_tm_score,
     count_liabilities,
 )
@@ -298,10 +298,13 @@ def main():
     # Training loop
     best_ppl = float("inf")
     best_epoch = -1
+    train_t0 = time.time()
     for epoch in range(c.max_epoch):
         t0 = time.time()
         model.train()
         meter = 0
+        epoch_loss_sum = 0.0
+        epoch_loss_count = 0
 
         for i, batch in enumerate(tqdm(loader_train, desc=f"Epoch {epoch}")):
             optimizer.zero_grad()
@@ -310,6 +313,8 @@ def main():
             nn.utils.clip_grad_norm_(model.parameters(), c.clip_norm)
             optimizer.step()
 
+            epoch_loss_sum += out.loss.item()
+            epoch_loss_count += 1
             meter += out.loss.item()
             if (i + 1) % c.print_iter == 0:
                 meter /= c.print_iter
@@ -337,8 +342,11 @@ def main():
               f"ab_full_rmsd={val_rmsd[2]:.3f} "
               f"lr={lr:.6f} {'*' if is_best else ''} [{elapsed:.0f}s]")
 
+        train_loss = epoch_loss_sum / max(1, epoch_loss_count)
         log_dict = {
             "epoch": epoch,
+            "train_loss": train_loss,
+            "val_loss": val_ppl,
             "val_ppl": val_ppl,
             "val_complex_rmsd": val_rmsd[0],
             "val_ab_bb_rmsd": val_rmsd[1],
@@ -352,16 +360,26 @@ def main():
             print(f"Early stopping at epoch {epoch}")
             break
 
+    train_time_s = time.time() - train_t0
+
     # Test with best model
     print("Loading best model for test...")
     ckpt.load_best(model, device)
 
+    infer_t0 = time.time()
     predictions, test_metrics = run_inference(model, test_data, c)
+
+    infer_time_s = time.time() - infer_t0
 
     # Save predictions
     pred_dir = os.path.join(save_dir, "predictions", "H3")
     save_predictions(predictions, pred_dir)
     print(f"Saved {len(predictions)} predictions to {pred_dir}")
+
+    # Save timing
+    timing = {"train_time_s": train_time_s, "infer_time_s": infer_time_s}
+    with open(os.path.join(save_dir, "timing.json"), "w") as f:
+        json.dump(timing, f)
 
     save_test_csv(predictions, test_metrics)
 
@@ -370,7 +388,7 @@ def main():
         print(f"  {k}: {v:.4f}")
 
     if wandb_run:
-        wandb_run.log({f"test_{k}": v for k, v in test_metrics.items()})
+        wandb_run.log({f"test_H3_{k}": v for k, v in test_metrics.items()})
         wandb_run.log({"test_n": len(predictions)})
         wandb_run.finish()
 

@@ -111,11 +111,11 @@ def patch_retrieval_paths(fasta_dir):
     from diffab.utils.retrieval.retrieve_utils import tensor_to_pdbid
 
     def _get_retrieved_1(pdb_id_tensor, length, CDR_flag):
-        """Training retrieval: excludes self-reference to match test distribution.
+        """Training retrieval: keeps all sequences including native.
 
-        The original RADAb includes the native in training retrieval, but this
-        causes the MSA transformer to learn to copy it, degrading test performance
-        when the native is removed. We exclude the native during training too.
+        Matches original RADAb behavior: during training, the native CDR sequence
+        is included in the MSA so the model learns to leverage retrieval context.
+        The native is only removed during inference (_get_retrieved_2).
         """
         pdb_id = tensor_to_pdbid(pdb_id_tensor)
         fasta_file = fasta_map.get(CDR_flag)
@@ -123,11 +123,6 @@ def patch_retrieval_paths(fasta_dir):
             return torch.full((15, length), 21).tolist()
 
         ref_sequences = orig_find(fasta_file, pdb_id)
-        # Remove self-reference (first seq is native) -- same as _get_retrieved_2
-        if ref_sequences:
-            ref_sequences = [x for x in ref_sequences if x != ref_sequences[0]]
-            if ref_sequences:
-                ref_sequences = ref_sequences[1:]
 
         num_sequences = 15
         if not ref_sequences:
@@ -147,14 +142,18 @@ def patch_retrieval_paths(fasta_dir):
         return ref_matrix_list
 
     def _get_retrieved_2(pdb_id_tensor, length, CDR_flag):
-        """Inference retrieval: excludes self-reference to prevent leakage."""
+        """Inference retrieval: excludes native to prevent leakage.
+
+        Matches original RADAb _2: removes all copies of the native CDR
+        sequence, then drops one more entry (matching original code exactly).
+        """
         pdb_id = tensor_to_pdbid(pdb_id_tensor)
         fasta_file = fasta_map.get(CDR_flag)
         if fasta_file is None or not os.path.exists(fasta_file):
             return torch.full((15, length), 21).tolist()
 
         ref_sequences = orig_find(fasta_file, pdb_id)
-        # Remove self-reference (first seq is native)
+        # Original RADAb lines 95-96: remove native copies, then skip one more
         if ref_sequences:
             ref_sequences = [x for x in ref_sequences if x != ref_sequences[0]]
             if ref_sequences:
@@ -538,6 +537,7 @@ def main():
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     log.info("Model trainable parameters: %d", n_params)
 
+    train_t0 = time.time()
     if c.test_only:
         ckpt_path = c.checkpoint
         if ckpt_path is None:
@@ -647,7 +647,10 @@ def main():
         else:
             log.info("No best checkpoint found, using current model state for test")
 
+    train_time_s = time.time() - train_t0
+
     # Test inference
+    infer_t0 = time.time()
     log.info("Running test inference...")
     all_predictions = run_test_inference(model, datasets["test"], device, c)
 
@@ -692,6 +695,13 @@ def main():
                         row[k] = ""
                 writer.writerow(row)
     log.info("Saved test metrics CSV to %s", csv_path)
+
+    # Save timing
+    infer_time_s = time.time() - infer_t0
+    timing_path = save_dir / "timing.json"
+    with open(timing_path, "w") as f:
+        json.dump({"train_time_s": train_time_s, "infer_time_s": infer_time_s}, f, indent=2)
+    log.info("Timing: train=%.1fs, infer=%.1fs", train_time_s, infer_time_s)
 
     # Print test summary per CDR
     print("\nTest results:")

@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+.eggs/
+build/
+dist/
+.ipynb_checkpoints/
+
+# Environments
+.venv/
+venv/
+env/
+
+# Experiment tracking
+wandb/
+lightning_logs/
+runs/
+
+# Logs and job output
+*.log
+*.out
+*.err
+logs/
+_logs/
+
+# Model checkpoints and large artifacts
+*.ckpt
+*.pt
+*.pth
+*.lmdb
+*.mdb
+checkpoints/
+*.pkl
+sabdab_summary.tsv
+**/summaries/*.pdb
+
+# Allow the committed sample data tensors
+!sample_data/complex_features/*.pt
+
+# Dataset (downloaded separately, never committed)
+data/
+!sample_data/
+
+# OS
+.DS_Store
+
+# Editors
+.idea/
+.vscode/

@@ -47,28 +47,28 @@ def convert_complex(feat):
     """
     cid = feat["complex_id"]
 
-    # Heavy chain
-    h_seq = feat["heavy_sequence"]
-    h_coords = np.array(feat["heavy_atom14_coords"], dtype=np.float64)  # (N_h, 14, 3)
-
-    # Light chain
-    l_seq = feat["light_sequence"]
-    l_coords = np.array(feat["light_atom14_coords"], dtype=np.float64)  # (N_l, 14, 3)
-
-    # Antibody = heavy + light
-    ab_seq = h_seq + l_seq
-    ab_coords = np.concatenate([h_coords, l_coords], axis=0)  # (N_h+N_l, 14, 3)
-
-    # Build CDR label string
+    # Heavy chain -- truncate to variable domain (CDR mask length)
     h_mask = feat["cdr_masks"]["imgt"]["heavy"]  # list of ints: -1=fw, 0=H1, 1=H2, 2=H3
+    h_vd_len = len(h_mask)
+    h_seq = feat["heavy_sequence"][:h_vd_len]
+    h_coords = np.array(feat["heavy_atom14_coords"], dtype=np.float64)[:h_vd_len]
+
+    # Light chain -- truncate to variable domain (CDR mask length)
+    l_mask = feat["cdr_masks"]["imgt"]["light"]
+    l_vd_len = len(l_mask)
+    l_seq = feat["light_sequence"][:l_vd_len]
+    l_coords = np.array(feat["light_atom14_coords"], dtype=np.float64)[:l_vd_len]
+
+    # Antibody = heavy VD + light VD
+    ab_seq = h_seq + l_seq
+    ab_coords = np.concatenate([h_coords, l_coords], axis=0)
+
+    # Build CDR label string from heavy chain mask
     cdr_str = ""
     for code in h_mask:
         cdr_str += _CDR_CODE_MAP.get(code, "0")
     # Light chain: all framework
-    cdr_str += "0" * len(l_seq)
-
-    if len(cdr_str) != len(ab_seq):
-        return None
+    cdr_str += "0" * l_vd_len
 
     # Antigen
     ag_seq = feat["antigen_sequence"]

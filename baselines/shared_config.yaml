@@ -1,17 +1,12 @@
 # Shared configuration for all CHIMERA baselines.
 # Individual baseline configs inherit these values.
 # Override per-baseline by setting the same key in the baseline's config.yaml.
-#
-# IMPORTANT: Set the CHIMERA_DATA_ROOT environment variable to point to your
-# local copy of the dataset before running any baseline.
-#   export CHIMERA_DATA_ROOT=/path/to/chimera-bench-v1.0
 
 paths:
-  # These paths use ${CHIMERA_DATA_ROOT} as a placeholder.
-  # chimera_utils.py resolves them at runtime from the environment variable.
-  data_root: ${CHIMERA_DATA_ROOT}
-  trans_baselines: ${CHIMERA_DATA_ROOT}/trans_baselines
-  results_root: ${CHIMERA_DATA_ROOT}/results
+  data_root: /home/exouser/data/chimera
+  trans_baselines: /home/exouser/data/chimera/trans_baselines
+  # results_root: /media/volume/data2/chimera/results
+  results_root: /media/volume/data2/chimera/results
 
 splits:
   available:
@@ -21,7 +16,7 @@ splits:
   default: epitope_group
 
 evaluation:
-  contact_cutoff: 8.0  # CA-CA distance threshold
+  contact_cutoff: 4.5
   metric_keys:
     - aar
     - caar

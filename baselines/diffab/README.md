@@ -152,6 +152,13 @@ results/diffab/diffab_multicdrs_{split}/
   eval_metrics_{split}.csv
 ```
 
+### Audit Fix [05-28-2026]
+
+**CRITICAL: AA_INDEX_TO_ONE mapping was wrong.** The reverse mapping from model output indices
+to one-letter AA codes used non-alphabetical ordering (`{0:'A', 1:'R', 2:'N', ...}`) instead of
+DiffAb's actual alphabetical ordering (`{0:'A', 1:'C', 2:'D', ...}`). All predicted sequences were
+scrambled, making every sequence metric (AAR, CAAR, PPL) meaningless. Fixed in `chimera_trainer.py`.
+
 ## Reference
 
 ```bibtex

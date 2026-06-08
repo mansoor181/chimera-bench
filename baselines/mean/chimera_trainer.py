@@ -28,7 +28,7 @@ _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _SCRIPT_DIR)
 
 from data import EquiAACDataset
-from data.pdb_utils import AAComplex, Protein
+from data.pdb_utils import AAComplex, Protein, VOCAB
 from models.MCAttGNN import EfficientMCAttModel
 from utils.logger import print_log
 
@@ -41,12 +41,42 @@ from chimera_utils import (
 
 # CHIMERA evaluation metrics
 sys.path.insert(0, os.path.join(_SCRIPT_DIR, "..", ".."))
-from evaluation.metrics import (
+from benchmark.evaluation.metrics import (
     aar as chimera_aar, kabsch_rmsd, tm_score as chimera_tm_score,
     count_liabilities,
 )
 
-METRIC_KEYS = ["ppl", "aar", "rmsd", "tm_score", "n_liabilities"]
+METRIC_KEYS = ["ppl", "aar", "rmsd", "tm_score", "n_liabilities", "top3_aar", "top5_aar", "top3_caar", "top5_caar"]
+
+
+def compute_topk_metrics(logits, true_seq, contact_positions=None, k_values=(3, 5)):
+    """Compute Top-K AAR and CAAR from logits."""
+    results = {}
+    L = len(true_seq)
+    if logits.shape[0] != L:
+        return {f'top{k}_aar': 0.0 for k in k_values} | {f'top{k}_caar': 0.0 for k in k_values}
+
+    true_indices = [VOCAB.symbol_to_idx(aa) for aa in true_seq]
+
+    for k in k_values:
+        topk_preds = torch.topk(logits, k=k, dim=-1).indices
+        in_topk = torch.tensor([
+            true_indices[i] in topk_preds[i].tolist() if true_indices[i] is not None else False
+            for i in range(L)
+        ])
+        results[f'top{k}_aar'] = in_topk.float().mean().item()
+
+        # Compute CAAR
+        if contact_positions and len(contact_positions) > 0:
+            contact_in_topk = [in_topk[i].item() for i in contact_positions if i < L]
+            if contact_in_topk:
+                results[f'top{k}_caar'] = sum(contact_in_topk) / len(contact_in_topk)
+            else:
+                results[f'top{k}_caar'] = results[f'top{k}_aar']
+        else:
+            results[f'top{k}_caar'] = results[f'top{k}_aar']
+
+    return results
 
 
 class RobustEquiAACDataset(EquiAACDataset):
@@ -97,6 +127,8 @@ def parse_args():
     parser.add_argument("--batch_size", type=int, default=None)
     parser.add_argument("--max_epoch", type=int, default=None)
     parser.add_argument("--no-wandb", action="store_true", help="Disable wandb logging")
+    parser.add_argument("--test_only", action="store_true", help="Skip training, run test only")
+    parser.add_argument("--checkpoint", type=str, default=None, help="Path to checkpoint for test_only")
     return parser.parse_args()
 
 
@@ -160,6 +192,8 @@ def build_config(cfg, shared, args):
         ns.max_epoch = args.max_epoch
     if not args.no_wandb:
         ns.use_wandb = True
+    ns.test_only = args.test_only
+    ns.checkpoint = args.checkpoint
 
     return ns
 
@@ -194,8 +228,9 @@ def valid_epoch(model, loader, device):
     return np.mean(losses), np.mean(snlls), np.mean(closses)
 
 
-def run_inference_with_metrics(model, dataset, loader, device, cdr_type, idx_to_cid):
-    """Run inference and compute CHIMERA metrics per complex.
+def run_inference_with_metrics(model, dataset, loader, device, cdr_type, idx_to_cid,
+                               complex_features_dir=None):
+    """Run inference and compute CHIMERA metrics per complex including Top-K CAAR.
 
     Uses idx_to_cid (list indexed by full dataset position) to resolve
     dataset index -> chimera complex_id.
@@ -210,10 +245,48 @@ def run_inference_with_metrics(model, dataset, loader, device, cdr_type, idx_to_
     idx = 0
     cdr_label = f"H{cdr_type}"
 
+    # Load contact info if available
+    cdr_to_mask_val = {'H1': 0, 'H2': 1, 'H3': 2, 'L1': 0, 'L2': 1, 'L3': 2}
+    contact_cache = {}
+    if complex_features_dir and os.path.isdir(complex_features_dir):
+        for pt_file in os.listdir(complex_features_dir):
+            if pt_file.endswith('.pt'):
+                cid = pt_file.replace('.pt', '')
+                try:
+                    feat = torch.load(os.path.join(complex_features_dir, pt_file),
+                                     map_location='cpu', weights_only=False)
+                    chain_type = 'heavy' if cdr_label.startswith('H') else 'light'
+                    cdr_mask_val = cdr_to_mask_val.get(cdr_label, 2)
+                    cdr_mask = feat.get('cdr_masks', {}).get('imgt', {}).get(chain_type, [])
+                    cdr_positions = [i for i, v in enumerate(cdr_mask) if v == cdr_mask_val]
+
+                    if not cdr_positions:
+                        continue
+
+                    numbering = feat.get('numbering', {}).get('imgt', {}).get(chain_type, [])
+                    heavy_chain = cid.split('_')[1]
+                    light_chain = cid.split('_')[2] if len(cid.split('_')) > 2 else ''
+                    target_chain = heavy_chain if chain_type == 'heavy' else light_chain
+                    paratope = feat.get('paratope_residues', [])
+                    paratope_resids = {resid for chain, resid, aa in paratope if chain == target_chain}
+
+                    contact_pos = []
+                    for i, pos in enumerate(cdr_positions):
+                        if pos < len(numbering):
+                            num_entry = numbering[pos]
+                            if isinstance(num_entry, tuple) and len(num_entry) >= 1:
+                                resid = num_entry[0]
+                                if resid in paratope_resids:
+                                    contact_pos.append(i)
+
+                    contact_cache[cid] = contact_pos
+                except Exception:
+                    pass
+
     with torch.no_grad():
         for batch in tqdm(loader, desc="Inference"):
             batch_size = len(batch["L"])
-            ppls, seqs, xs, true_xs, _ = model.infer(batch, device)
+            ppls, seqs, xs, true_xs, logits_list = model.infer(batch, device)
             for i in range(batch_size):
                 dataset_idx = dataset.idx_mapping[idx]
                 cplx = dataset.data[dataset_idx]
@@ -236,11 +309,19 @@ def run_inference_with_metrics(model, dataset, loader, device, cdr_type, idx_to_
                 tm_val = chimera_tm_score(pred_ca, true_ca)
                 liab = count_liabilities(pred_seq)
 
+                # Compute Top-K metrics from logits (with contact positions for CAAR)
+                contact_pos = contact_cache.get(cid, None)
+                topk_metrics = compute_topk_metrics(logits_list[i], origin_seq, contact_pos)
+
                 all_metrics["ppl"].append(ppls[i])
                 all_metrics["aar"].append(aar_val)
                 all_metrics["rmsd"].append(rmsd_val)
                 all_metrics["tm_score"].append(tm_val)
                 all_metrics["n_liabilities"].append(liab)
+                all_metrics["top3_aar"].append(topk_metrics['top3_aar'])
+                all_metrics["top5_aar"].append(topk_metrics['top5_aar'])
+                all_metrics["top3_caar"].append(topk_metrics['top3_caar'])
+                all_metrics["top5_caar"].append(topk_metrics['top5_caar'])
 
                 pred = {
                     "complex_id": cid,
@@ -254,6 +335,8 @@ def run_inference_with_metrics(model, dataset, loader, device, cdr_type, idx_to_
                     "rmsd": rmsd_val,
                     "tm_score": tm_val,
                     "n_liabilities": liab,
+                    "logits": logits_list[i].cpu().numpy(),
+                    **topk_metrics,
                 }
                 predictions.append(pred)
                 idx += 1
@@ -353,59 +436,85 @@ def main():
     ckpt = ModelCheckpoint(save_dir, mode=c.ckpt_mode)
 
     # WandB
-    wandb_run = setup_wandb(c.wandb_project, run_name, vars(c), enabled=c.use_wandb)
+    wandb_run = setup_wandb(c.wandb_project, run_name, vars(c), enabled=c.use_wandb and not c.test_only)
 
-    # Training loop
-    for epoch in range(c.max_epoch):
-        t0 = time.time()
-        train_loss, train_snll, train_closs = train_epoch(
-            model, train_loader, optimizer, device, c.grad_clip)
+    # Test-only mode: load checkpoint and skip training
+    if c.test_only:
+        ckpt_path = c.checkpoint or os.path.join(save_dir, "checkpoints", "best.pt")
+        if not os.path.exists(ckpt_path):
+            print(f"ERROR: Checkpoint not found at {ckpt_path}")
+            sys.exit(1)
+        print(f"Loading checkpoint from {ckpt_path}...")
+        state = torch.load(ckpt_path, map_location=device)
+        model.load_state_dict(state["model_state_dict"])
+        train_time_s = 0.0
+    else:
+        # Training loop
+        train_t0 = time.time()
+        for epoch in range(c.max_epoch):
+            t0 = time.time()
+            train_loss, train_snll, train_closs = train_epoch(
+                model, train_loader, optimizer, device, c.grad_clip)
 
-        val_loss, val_snll, val_closs = valid_epoch(model, valid_loader, device)
-        scheduler.step()
+            val_loss, val_snll, val_closs = valid_epoch(model, valid_loader, device)
+            scheduler.step()
 
-        # Val inference with CHIMERA metrics
-        _, val_metrics = run_inference_with_metrics(
-            model, valid_set, valid_loader, device, c.cdr_type, idx_to_cid)
+            # Val inference with CHIMERA metrics
+            _, val_metrics = run_inference_with_metrics(
+                model, valid_set, valid_loader, device, c.cdr_type, idx_to_cid)
 
-        lr = optimizer.param_groups[0]["lr"]
-        elapsed = time.time() - t0
-        is_best = ckpt.save(model, optimizer, scheduler, epoch, val_loss)
+            lr = optimizer.param_groups[0]["lr"]
+            elapsed = time.time() - t0
+            is_best = ckpt.save(model, optimizer, scheduler, epoch, val_loss)
 
-        print(f"Epoch {epoch:3d} | train_loss={train_loss:.4f} val_loss={val_loss:.4f} "
-              f"train_ppl={np.exp(train_snll):.2f} val_ppl={np.exp(val_snll):.2f} "
-              f"val_aar={val_metrics.get('aar', 0):.4f} "
-              f"val_rmsd={val_metrics.get('rmsd', 0):.4f} "
-              f"val_tm={val_metrics.get('tm_score', 0):.4f} "
-              f"lr={lr:.6f} {'*' if is_best else ''} [{elapsed:.0f}s]")
+            print(f"Epoch {epoch:3d} | train_loss={train_loss:.4f} val_loss={val_loss:.4f} "
+                  f"train_ppl={np.exp(train_snll):.2f} val_ppl={np.exp(val_snll):.2f} "
+                  f"val_aar={val_metrics.get('aar', 0):.4f} "
+                  f"val_rmsd={val_metrics.get('rmsd', 0):.4f} "
+                  f"val_tm={val_metrics.get('tm_score', 0):.4f} "
+                  f"lr={lr:.6f} {'*' if is_best else ''} [{elapsed:.0f}s]")
 
-        log_dict = {
-            "epoch": epoch,
-            "train_loss": train_loss, "val_loss": val_loss,
-            "train_snll": train_snll, "val_snll": val_snll,
-            "train_closs": train_closs, "val_closs": val_closs,
-            "train_ppl": float(np.exp(train_snll)),
-            "val_ppl": float(np.exp(val_snll)),
-            "lr": lr,
-        }
-        log_dict.update({f"val_{k}": v for k, v in val_metrics.items()})
-        if wandb_run:
-            wandb_run.log(log_dict)
+            log_dict = {
+                "epoch": epoch,
+                "train_loss": train_loss, "val_loss": val_loss,
+                "train_snll": train_snll, "val_snll": val_snll,
+                "train_closs": train_closs, "val_closs": val_closs,
+                "train_ppl": float(np.exp(train_snll)),
+                "val_ppl": float(np.exp(val_snll)),
+                "lr": lr,
+            }
+            log_dict.update({f"val_{k}": v for k, v in val_metrics.items()})
+            if wandb_run:
+                wandb_run.log(log_dict)
 
-        if early_stop(val_loss):
-            print(f"Early stopping at epoch {epoch}")
-            break
+            if early_stop(val_loss):
+                print(f"Early stopping at epoch {epoch}")
+                break
+
+        train_time_s = time.time() - train_t0
+
+        # Load best model for test after training
+        print("Loading best model for test...")
+        ckpt.load_best(model, device)
 
     # Test
-    print("Loading best model for test...")
-    ckpt.load_best(model, device)
+    infer_t0 = time.time()
+    complex_features_dir = os.path.join(c.data_root, "processed", "complex_features")
     predictions, test_metrics = run_inference_with_metrics(
-        model, test_set, test_loader, device, c.cdr_type, idx_to_cid)
+        model, test_set, test_loader, device, c.cdr_type, idx_to_cid,
+        complex_features_dir=complex_features_dir)
+
+    infer_time_s = time.time() - infer_t0
 
     # Save predictions
     pred_dir = os.path.join(save_dir, "predictions")
     save_predictions(predictions, pred_dir)
     print(f"Saved {len(predictions)} predictions to {pred_dir}")
+
+    # Save timing
+    timing = {"train_time_s": train_time_s, "infer_time_s": infer_time_s}
+    with open(os.path.join(save_dir, "timing.json"), "w") as f:
+        json.dump(timing, f)
 
     # Save test metrics CSV
     save_test_csv(predictions, test_metrics, cdr_label)
@@ -417,7 +526,7 @@ def main():
 
     # Log test metrics to wandb
     if wandb_run:
-        wandb_run.log({f"test_{k}": v for k, v in test_metrics.items()})
+        wandb_run.log({f"test_{cdr_label}_{k}": v for k, v in test_metrics.items()})
         wandb_run.log({"test_n": len(predictions)})
         wandb_run.finish()
 

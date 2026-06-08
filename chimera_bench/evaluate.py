@@ -1,7 +1,7 @@
 """Unified evaluation entry point for CHIMERA-Bench.
 
 Usage:
-    python -m evaluation.evaluate \
+    python -m chimera_bench.evaluate \
         --predictions /path/to/predictions/ \
         --split epitope_group \
         --cdr-type H3 \
@@ -12,26 +12,29 @@ CA-CA 8A contacts when --cdr-type is specified: only contacts where the
 antibody partner is a CDR residue are counted, because framework contacts
 are trivially preserved by construction and would dominate the metrics.
 
-Predictions directory should contain one .pt or .json file per complex,
-each with keys: complex_id, pred_sequence, pred_coords (N,3), etc.
+Predictions directory should contain one .pt file per complex, each with
+keys: complex_id, pred_sequence, pred_coords (N,3), pred_ab_full_coords (N,3).
+
+Security note: prediction files are loaded with torch.load(weights_only=False)
+so that numpy coordinate arrays deserialize. Only evaluate prediction files
+you trust, as pickle can execute arbitrary code on load.
 """
 
 import argparse
 import json
 import logging
-import pickle
 from pathlib import Path
-import torch
 
 import numpy as np
+import torch
 
-from config import Config
-from evaluation.metrics import (
+from .metrics import (
     aar, caar, kabsch_rmsd, tm_score, fnat, interface_rmsd, dockq_score,
     epitope_metrics, compute_epitope_mask, count_liabilities,
     pairwise_diversity, structural_diversity, novelty_score, bootstrap_ci,
     chimera_s, chimera_b, compute_ca_contacts,
 )
+from .data import get_data_root, load_split, load_complex, cdr_indices
 
 log = logging.getLogger(__name__)
 
@@ -87,20 +90,20 @@ def evaluate_single(design: DesignResult, native: NativeComplex) -> dict:
                            native.contact_mask)
     results["n_liabilities"] = count_liabilities(design.pred_sequence)
 
-    # Group 2: Structure
-    if design.pred_coords is not None and native.true_coords is not None:
+    # Group 2: Structure (Kabsch needs matching residue counts)
+    if (design.pred_coords is not None and native.true_coords is not None
+            and len(design.pred_coords) == len(native.true_coords)):
         results["rmsd"] = kabsch_rmsd(design.pred_coords, native.true_coords)
         results["tm_score"] = tm_score(design.pred_coords, native.true_coords)
 
     # CDR-specific filtering: only count contacts where antibody partner
-    # is a CDR residue. Framework contacts are trivially preserved by
-    # construct_pred_ab_full_coords and would dominate the metrics.
+    # is a CDR residue. Framework contacts are trivially preserved and
+    # would otherwise dominate the metrics.
     cdr_set = set(native.cdr_indices.tolist()) if native.cdr_indices is not None else None
 
     # Group 4: Epitope specificity (CDR-specific when cdr_indices available)
     if design.pred_ab_full_coords is not None:
         if cdr_set is not None:
-            # CDR-specific: use CDR-only CA coords for epitope
             pred_cdr_ca = design.pred_ab_full_coords[native.cdr_indices]
             epi = epitope_metrics(pred_cdr_ca, native.ag_coords,
                                   native.epitope_mask)
@@ -115,12 +118,10 @@ def evaluate_single(design: DesignResult, native: NativeComplex) -> dict:
             design.pred_ab_full_coords, native.ag_coords, cutoff=8.0)
 
         if cdr_set is not None:
-            # Filter to CDR-specific contacts
             pred_contacts = {(i, j) for i, j in all_pred_contacts if i in cdr_set}
-            true_contacts = native.contact_pairs
         else:
             pred_contacts = all_pred_contacts
-            true_contacts = native.contact_pairs
+        true_contacts = native.contact_pairs
 
         fnat_val = fnat(pred_contacts, true_contacts)
         results["fnat"] = fnat_val
@@ -175,8 +176,7 @@ def evaluate_designs(designs: list[DesignResult], native: NativeComplex,
         result["seq_diversity"] = pairwise_diversity(seqs)
 
     # Structural diversity
-    coord_list = [d.pred_coords for d in designs
-                  if d.pred_coords is not None]
+    coord_list = [d.pred_coords for d in designs if d.pred_coords is not None]
     if len(coord_list) > 1 and all(len(c) == len(coord_list[0]) for c in coord_list):
         result["struct_diversity"] = structural_diversity(coord_list)
 
@@ -213,10 +213,8 @@ def evaluate_benchmark(all_designs: dict[str, list[DesignResult]],
         if cid not in natives:
             log.warning("No native found for %s, skipping", cid)
             continue
-        result = evaluate_designs(designs, natives[cid], training_seqs)
-        results.append(result)
+        results.append(evaluate_designs(designs, natives[cid], training_seqs))
 
-    # Summary with bootstrap CIs
     summary = {}
     ci_keys = ["best_aar", "best_caar", "best_rmsd", "best_tm_score",
                "best_fnat", "best_dockq", "best_epitope_f1",
@@ -245,99 +243,62 @@ def evaluate_benchmark(all_designs: dict[str, list[DesignResult]],
     return output
 
 
-# -- CLI --
+# -- CLI helpers --
 
 def _load_predictions(pred_dir: Path) -> dict[str, list[DesignResult]]:
-    """Load prediction files from a directory."""
-    
+    """Load prediction .pt files from a directory.
+
+    Security note: weights_only=False is required to deserialize numpy
+    coordinate arrays. Only load prediction files you trust.
+    """
     all_designs = {}
     for f in sorted(pred_dir.glob("*.pt")):
         data = torch.load(f, map_location="cpu", weights_only=False)
         cid = data.get("complex_id", f.stem)
+        coords = data.get("pred_coords")
+        if coords is not None and not isinstance(coords, np.ndarray):
+            coords = np.array(coords)
         design = DesignResult(
             complex_id=cid,
             pred_sequence=data.get("pred_sequence", ""),
-            pred_coords=data.get("pred_coords"),
+            pred_coords=coords,
             pred_ab_full_coords=data.get("pred_ab_full_coords"),
         )
-        if isinstance(design.pred_coords, np.ndarray) is False and design.pred_coords is not None:
-            design.pred_coords = np.array(design.pred_coords)
         all_designs.setdefault(cid, []).append(design)
     return all_designs
 
 
-def _get_cdr_indices(feat, cdr_type, scheme="imgt"):
-    """Get CDR indices from complex_features cdr_masks."""
-    _CDR_LABEL_TO_CODE = {"H1": 0, "H2": 1, "H3": 2, "L1": 3, "L2": 4, "L3": 5}
-    masks = feat["cdr_masks"][scheme]
-    h_mask = np.array(masks["heavy"])
-    l_mask = np.array(masks["light"])
-    h_ca_len = len(feat["heavy_ca_coords"])
+def load_natives(split_name: str, subset: str = "test", cdr_type: str = None,
+                 numbering_scheme: str = "imgt", data_root=None
+                 ) -> dict[str, NativeComplex]:
+    """Build native complexes for a split subset directly from complex_features.
 
-    code = _CDR_LABEL_TO_CODE.get(cdr_type)
-    if code is None:
-        return None
-    if code <= 2:
-        return np.where(h_mask == code)[0]
-    else:
-        return np.where(l_mask == code)[0] + h_ca_len
-
-
-def _load_natives(cfg: Config, split_name: str,
-                  split_type: str = "test",
-                  cdr_type: str = None,
-                  numbering_scheme: str = "imgt") -> dict[str, NativeComplex]:
-    """Load native complexes from annotations + split file.
-
-    When cdr_type is specified, contacts and epitope masks are CDR-specific:
-    only contacts where the antibody partner is a CDR residue are included.
-    This prevents framework contacts (trivially preserved by construction)
-    from dominating the interface metrics.
+    When cdr_type is specified, contacts and the epitope mask are CDR-specific:
+    only contacts where the antibody partner is a CDR residue are kept. This
+    prevents framework contacts (trivially preserved) from dominating metrics.
     """
-
-    # Load split
-    split_path = cfg.splits_dir / f"{split_name}.json"
-    with open(split_path) as f:
-        split = json.load(f)
-    test_ids = set(split.get(split_type, []))
-
-    # Load annotations
-    with open(cfg.processed_dir / "annotations.pkl", "rb") as f:
-        annotations = pickle.load(f)
-    ann_map = {a.complex_id: a for a in annotations}
+    root = get_data_root(data_root)
+    test_ids = load_split(split_name, data_root=root).get(subset, [])
 
     natives = {}
-    feat_dir = cfg.processed_dir / "complex_features"
     for cid in test_ids:
-        ann = ann_map.get(cid)
-        if ann is None:
+        try:
+            feat = load_complex(cid, data_root=root)
+        except FileNotFoundError:
             continue
 
-        # Load features for coords
-        feat_path = feat_dir / f"{cid}.pt"
-        if not feat_path.exists():
-            continue
-        feat = torch.load(feat_path, map_location="cpu", weights_only=False)
+        h_ca = np.asarray(feat.get("heavy_ca_coords", np.zeros((0, 3))))
+        l_ca = np.asarray(feat.get("light_ca_coords", np.zeros((0, 3))))
+        ag_ca = np.asarray(feat.get("antigen_ca_coords", np.zeros((0, 3))))
+        ab_ca = np.concatenate([h_ca, l_ca], axis=0) if len(h_ca) + len(l_ca) else np.zeros((0, 3))
 
-        h_ca = feat.get("heavy_ca_coords", np.zeros((0, 3)))
-        l_ca = feat.get("light_ca_coords", np.zeros((0, 3)))
-        ag_ca = feat.get("antigen_ca_coords", np.zeros((0, 3)))
-        ab_ca = np.concatenate([h_ca, l_ca], axis=0) if len(h_ca) + len(l_ca) > 0 else np.zeros((0, 3))
+        idx = cdr_indices(feat, cdr_type, numbering_scheme) if cdr_type else None
 
-        # Get CDR indices if cdr_type specified
-        cdr_indices = None
-        if cdr_type is not None:
-            cdr_indices = _get_cdr_indices(feat, cdr_type, numbering_scheme)
-
-        # Compute contacts using symmetric CA-CA 8A definition
         all_contacts = compute_ca_contacts(ab_ca, ag_ca, cutoff=8.0)
-
-        # CDR-specific filtering: only contacts where ab partner is CDR residue
-        if cdr_indices is not None and len(cdr_indices) > 0:
-            cdr_set = set(cdr_indices.tolist())
+        if idx is not None and len(idx) > 0:
+            cdr_set = set(idx.tolist())
             contact_set = {(i, j) for i, j in all_contacts if i in cdr_set}
-            # CDR-specific epitope: only ag residues contacted by CDR
-            epi_mask = compute_epitope_mask(ab_ca[cdr_indices], ag_ca, cutoff=8.0)
+            epi_mask = compute_epitope_mask(ab_ca[idx], ag_ca, cutoff=8.0)
         else:
             contact_set = all_contacts
             epi_mask = np.zeros(len(ag_ca), dtype=bool)
@@ -348,10 +309,7 @@ def _load_natives(cfg: Config, split_name: str,
         for ab_i, _ in contact_set:
             para_mask[ab_i] = True
 
-        # Use sequences for AAR
-        h_seq = ann.sequences.get("heavy", "")
-        l_seq = ann.sequences.get("light", "")
-        full_seq = h_seq + l_seq
+        full_seq = feat.get("heavy_sequence", "") + feat.get("light_sequence", "")
 
         natives[cid] = NativeComplex(
             complex_id=cid,
@@ -362,7 +320,7 @@ def _load_natives(cfg: Config, split_name: str,
             contact_mask=para_mask,
             contact_pairs=contact_set,
             ab_full_coords=ab_ca,
-            cdr_indices=cdr_indices,
+            cdr_indices=idx,
         )
 
     return natives
@@ -377,7 +335,10 @@ def main():
                         help="Directory with prediction .pt files")
     parser.add_argument("--split", default="epitope_group",
                         choices=["epitope_group", "antigen_fold", "temporal"],
-                        help="Split type to evaluate on")
+                        help="Split to evaluate on")
+    parser.add_argument("--subset", default="test",
+                        choices=["train", "val", "test"],
+                        help="Split subset (default: test)")
     parser.add_argument("--cdr-type", default=None,
                         choices=["H1", "H2", "H3", "L1", "L2", "L3"],
                         help="CDR type for CDR-specific evaluation")
@@ -387,7 +348,7 @@ def main():
     parser.add_argument("--output", type=Path, default=None,
                         help="Output JSON path (default: predictions/results.json)")
     parser.add_argument("--data-root", type=Path, default=None,
-                        help="Override data root directory")
+                        help="Dataset root (default: CHIMERA_DATA_ROOT)")
     parser.add_argument("--log-level", default="INFO",
                         choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     args = parser.parse_args()
@@ -397,18 +358,15 @@ def main():
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
 
-    cfg = Config()
-    if args.data_root:
-        cfg.data_root = args.data_root
-
     log.info("Loading predictions from %s", args.predictions)
     all_designs = _load_predictions(args.predictions)
     log.info("Loaded %d complexes with %d total designs",
              len(all_designs), sum(len(v) for v in all_designs.values()))
 
     log.info("Loading natives for split=%s cdr_type=%s", args.split, args.cdr_type)
-    natives = _load_natives(cfg, args.split, cdr_type=args.cdr_type,
-                            numbering_scheme=args.numbering_scheme)
+    natives = load_natives(args.split, subset=args.subset, cdr_type=args.cdr_type,
+                           numbering_scheme=args.numbering_scheme,
+                           data_root=args.data_root)
     log.info("Loaded %d native complexes", len(natives))
 
     output_path = args.output or args.predictions / "results.json"

@@ -44,7 +44,7 @@ from chimera_utils import (
 
 # CHIMERA evaluation metrics (for inline validation metrics)
 sys.path.insert(0, os.path.join(_SCRIPT_DIR, "..", ".."))
-from evaluation.metrics import (
+from benchmark.evaluation.metrics import (
     aar as chimera_aar, kabsch_rmsd, tm_score as chimera_tm_score,
     count_liabilities,
 )
@@ -209,11 +209,28 @@ def train_epoch(model, loader, optimizer, scheduler, device, grad_clip,
     total_loss, total_snll, total_aar = [], [], []
     total_struct, total_dock = [], []
 
+    n_skipped = 0
     for batch in tqdm(loader, desc="Train"):
         batch = to_device(batch, device)
         batch["context_ratio"] = get_context_ratio(global_step, max_step)
 
-        loss, seq_detail, struct_detail, dock_detail, pdev_detail = model(**batch)
+        # Some context-masking configurations yield a degenerate interface graph
+        # (empty KNN edges) that raises "non-empty list of Tensors" in coord2radial,
+        # or a non-finite loss. These rare batches are skipped so they neither crash
+        # training nor corrupt weights. The torch.cat check is host-side, so the CUDA
+        # context stays valid and we can continue with the next batch.
+        try:
+            loss, seq_detail, struct_detail, dock_detail, pdev_detail = model(**batch)
+        except RuntimeError as e:
+            if "non-empty list of Tensors" not in str(e):
+                raise
+            n_skipped += 1
+            global_step += 1
+            continue
+        if not torch.isfinite(loss):
+            n_skipped += 1
+            global_step += 1
+            continue
         snll, aar = seq_detail
         struct_loss = struct_detail[0]
         dock_loss = dock_detail[0]
@@ -231,6 +248,9 @@ def train_epoch(model, loader, optimizer, scheduler, device, grad_clip,
         total_struct.append(_val(struct_loss))
         total_dock.append(_val(dock_loss))
         global_step += 1
+
+    if n_skipped:
+        print(f"  Skipped {n_skipped} degenerate train batch(es) this epoch")
 
     return (np.mean(total_loss), np.mean(total_snll), np.mean(total_aar),
             np.mean(total_struct), np.mean(total_dock), global_step)
@@ -382,10 +402,14 @@ def run_inference_with_metrics(model, dataset, loader, device, cdr, idx_to_cid):
                         )
                         pred_ca = coords[cdr_indices, 1, :].cpu().numpy()
                         true_ca = true_X[cdr_indices, 1, :].cpu().numpy()
+                        pred_bb = coords[cdr_indices, :4, :].cpu().numpy()
+                        true_bb = true_X[cdr_indices, :4, :].cpu().numpy()
                     else:
                         cdr_seq, gt_seq = "", ""
                         pred_ca = np.zeros((0, 3))
                         true_ca = np.zeros((0, 3))
+                        pred_bb = np.zeros((0, 4, 3))
+                        true_bb = np.zeros((0, 4, 3))
 
                     aar_val = chimera_aar(cdr_seq, gt_seq) if gt_seq else 0.0
                     if len(pred_ca) > 0:
@@ -409,6 +433,8 @@ def run_inference_with_metrics(model, dataset, loader, device, cdr, idx_to_cid):
                         "true_sequence": gt_seq,
                         "pred_coords": pred_ca,
                         "true_coords": true_ca,
+                        "pred_bb": pred_bb,
+                        "true_bb": true_bb,
                         "ppl": ppl_val,
                     }
                     predictions_by_cdr[cdr_lab].append(pred)
@@ -451,6 +477,34 @@ def save_test_csv(summary_by_cdr):
         for row in rows:
             writer.writerow(row)
     print(f"Saved test metrics CSV to {csv_path}")
+
+
+def filter_small_complexes(view, idx_to_cid, k_neighbors):
+    """Drop complexes whose local interface graph (antigen + paratope) has fewer
+    than k_neighbors nodes. dyMEAN builds the local complex via KNN edges with
+    torch.topk(..., k_neighbors); when the graph has fewer than k_neighbors nodes
+    the edge list is empty, crashing in coord2radial. A 3-residue peptide antigen
+    (e.g. 3qnz_B_A_C) triggers this. Filtering preserves the original model code.
+    """
+    boa = VOCAB.symbol_to_idx(VOCAB.BOA)
+    boh = VOCAB.symbol_to_idx(VOCAB.BOH)
+    keep, dropped = [], []
+    for i in range(len(view)):
+        item = view[i]
+        S = torch.as_tensor(item["S"])
+        pm = torch.as_tensor(item["paratope_mask"])
+        bap = (S == boa).nonzero()
+        bhp = (S == boh).nonzero()
+        ag_len = (bhp[0].item() - bap[0].item() - 1) if (bap.numel() and bhp.numel()) else 0
+        local = ag_len + int(pm.sum())
+        if local >= k_neighbors:
+            keep.append(view.indices[i])
+        else:
+            dropped.append(idx_to_cid[view.indices[i]])
+    if dropped:
+        print(f"  Dropped {len(dropped)} complex(es) with local graph < k_neighbors "
+              f"({k_neighbors}): {dropped}")
+    return DatasetView(view.dataset, keep)
 
 
 def main():
@@ -496,6 +550,9 @@ def main():
     split_ids = load_split_ids(c.split, c.data_root)
     print("Splitting dataset:")
     views = split_dataset(dataset, split_ids, cid_to_idx)
+    # Filter complexes too small for dyMEAN's KNN edge construction (k_neighbors).
+    for subset in ("train", "val", "test"):
+        views[subset] = filter_small_complexes(views[subset], idx_to_cid, c.k_neighbors)
     train_set, valid_set, test_set = views["train"], views["val"], views["test"]
 
     # Model
@@ -529,6 +586,7 @@ def main():
         state = torch.load(ckpt_path, map_location=device)
         model.load_state_dict(state["model_state_dict"])
         wandb_run = None
+        train_time_s = 0.0
         # Test loader only for test_only mode
         test_loader = DataLoader(
             test_set, batch_size=c.batch_size, shuffle=False,
@@ -562,6 +620,7 @@ def main():
 
         # Training loop
         global_step = 0
+        train_t0 = time.time()
         for epoch in range(c.max_epoch):
             t0 = time.time()
             (train_loss, train_snll, train_aar,
@@ -597,6 +656,8 @@ def main():
                 "epoch": epoch,
                 "train_loss": train_loss, "val_loss": val_loss,
                 "train_snll": train_snll, "val_snll": val_snll,
+                "train_ppl": float(np.exp(train_snll)),
+                "val_ppl": float(np.exp(val_snll)),
                 "train_aar": train_aar, "val_aar": val_aar,
                 "train_struct_loss": train_struct, "train_dock_loss": train_dock,
                 "lr": lr,
@@ -609,13 +670,23 @@ def main():
                 print(f"Early stopping at epoch {epoch}")
                 break
 
+        train_time_s = time.time() - train_t0
+
         # Load best model for test
         print("Loading best model for test...")
         ckpt.load_best(model, device)
 
     # Test inference (runs for both training and test_only modes)
+    infer_t0 = time.time()
     predictions_by_cdr, test_metrics_by_cdr = run_inference_with_metrics(
         model, test_set, test_loader, device, c.cdr, idx_to_cid)
+
+    infer_time_s = time.time() - infer_t0
+
+    # Save timing
+    timing = {"train_time_s": train_time_s, "infer_time_s": infer_time_s}
+    with open(os.path.join(save_dir, "timing.json"), "w") as f:
+        json.dump(timing, f)
 
     # Save predictions per CDR
     pred_base_dir = os.path.join(save_dir, "predictions")

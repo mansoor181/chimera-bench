@@ -208,6 +208,18 @@ python chimera_evaluate.py --predictions /path/to/predictions/ --split epitope_g
 python chimera_evaluate.py --aggregate --split epitope_group
 ```
 
+### Audit Fixes [05-28-2026]
+
+1. **CRITICAL: CDR range offset off-by-one.** The concatenated tensor format is
+   `[BOA, ag..., BOH, hc..., BOL, lc...]`. Heavy chain offset was `ag_len + 1` (missing BOA token),
+   should be `ag_len + 2`. Light chain offset was `ag_len + 1 + hc_len + 1`, should be
+   `ag_len + hc_len + 3`. All CDR extractions were shifted by 1 position, corrupting predictions
+   and ground truth. Fixed in `chimera_trainer.py`.
+
+2. **CRITICAL: `cdr: null` masked entire antibody.** In `config.yaml`, `cdr: null` caused the
+   model to mask the entire antibody sequence instead of just CDR regions. Changed to
+   `cdr: [H1, H2, H3, L1, L2, L3]` to explicitly specify CDR types.
+
 ## Citation
 
 ```text

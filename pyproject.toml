@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "chimera-bench"
+version = "1.0.0"
+description = "A gold-standard benchmark for epitope-specific antibody CDR design"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "CHIMERA-Bench authors" }]
+keywords = ["antibody", "protein-design", "benchmark", "epitope", "CDR"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+dependencies = [
+    "numpy",
+    "pandas",
+    "scipy",
+    "torch>=2.0",
+]
+
+[project.optional-dependencies]
+# Tools needed only to rebuild the dataset from scratch (pipeline.py).
+build = ["biopython", "tqdm"]
+# Test suite.
+test = ["pytest"]
+
+[project.urls]
+Homepage = "https://github.com/mansoorbaloch/chimera-bench"
+Dataset = "https://huggingface.co/datasets/mansoorbaloch/chimera-bench"
+
+[project.scripts]
+chimera-eval = "chimera_bench.evaluate:main"
+
+[tool.setuptools]
+# Only ship the consumer-facing package. The dataset-construction modules
+# (pipeline.py, data/, converters/, config.py) and the baselines/ directory
+# use generic top-level names and are meant to be run from the repo root,
+# not installed.
+packages = ["chimera_bench"]

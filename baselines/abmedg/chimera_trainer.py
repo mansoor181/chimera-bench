@@ -18,9 +18,11 @@ import logging
 import os
 import pickle
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import torch
 import yaml
 from easydict import EasyDict
@@ -245,15 +247,25 @@ def build_datasets(c, lmdb_path, split_ids, available_ids):
     return datasets
 
 
-def train_step(model, batch, optimizer, loss_weights, max_grad_norm):
-    """Single training iteration."""
+def train_step(model, batch, optimizer, loss_weights, max_grad_norm,
+               accumulation_steps=1, micro_step=0):
+    """Single training micro-step with gradient accumulation.
+
+    Call with micro_step=0..accumulation_steps-1 per logical iteration.
+    optimizer.zero_grad() on first micro_step; optimizer.step() on last.
+    """
     model.train()
     loss_dict = model(batch)
     loss = sum_weighted_losses(loss_dict, loss_weights)
-    optimizer.zero_grad()
-    loss.backward()
-    grad_norm = clip_grad_norm_(model.parameters(), max_grad_norm)
-    optimizer.step()
+    scaled_loss = loss / accumulation_steps
+    if micro_step == 0:
+        optimizer.zero_grad()
+    scaled_loss.backward()
+    if micro_step == accumulation_steps - 1:
+        grad_norm = clip_grad_norm_(model.parameters(), max_grad_norm)
+        optimizer.step()
+    else:
+        grad_norm = 0.0
     return {k: v.item() for k, v in loss_dict.items()}, loss.item(), grad_norm
 
 
@@ -444,6 +456,7 @@ def main():
     n_params = sum(p.numel() for p in model.parameters())
     log.info("Model parameters: %d (%.1fM)", n_params, n_params / 1e6)
 
+    train_t0 = time.time()
     if c.test_only:
         ckpt_path = c.checkpoint
         if ckpt_path is None:
@@ -495,14 +508,28 @@ def main():
         wandb_run = setup_wandb(c.wandb_project, run_name, config_save,
                                 enabled=c.use_wandb)
 
-        # Training loop (iteration-based)
-        log.info("Starting training for %d iterations...", c.max_iters)
+        # Training loop (iteration-based, with gradient accumulation)
+        accumulation_steps = 2  # matches original AbMEGD train.py
+        log.info("Starting training for %d iterations (accumulation_steps=%d)...",
+                 c.max_iters, accumulation_steps)
         loss_weights = EasyDict(c.loss_weights)
 
         for it in range(1, c.max_iters + 1):
-            batch = recursive_to(next(train_iter), device)
-            loss_parts, loss_val, grad_norm = train_step(
-                model, batch, optimizer, loss_weights, c.max_grad_norm)
+            accum_loss_parts = {}
+            accum_loss_val = 0.0
+            grad_norm = 0.0
+            for micro_step in range(accumulation_steps):
+                batch = recursive_to(next(train_iter), device)
+                loss_parts, loss_val, gn = train_step(
+                    model, batch, optimizer, loss_weights, c.max_grad_norm,
+                    accumulation_steps=accumulation_steps, micro_step=micro_step)
+                accum_loss_val += loss_val / accumulation_steps
+                for k, v in loss_parts.items():
+                    accum_loss_parts[k] = accum_loss_parts.get(k, 0.0) + v / accumulation_steps
+                if gn > 0:
+                    grad_norm = gn
+            loss_parts = accum_loss_parts
+            loss_val = accum_loss_val
 
             if it % 100 == 0:
                 lr = optimizer.param_groups[0]["lr"]
@@ -551,7 +578,10 @@ def main():
         else:
             log.info("No best checkpoint found, using current model state for test")
 
+    train_time_s = time.time() - train_t0
+
     # Test inference
+    infer_t0 = time.time()
     log.info("Running test inference...")
     all_predictions = run_test_inference(model, datasets["test"], device, c)
 
@@ -597,6 +627,13 @@ def main():
                         row[k] = ""
                 writer.writerow(row)
     log.info("Saved test metrics CSV to %s", csv_path)
+
+    # Save timing
+    infer_time_s = time.time() - infer_t0
+    timing_path = save_dir / "timing.json"
+    with open(timing_path, "w") as f:
+        json.dump({"train_time_s": train_time_s, "infer_time_s": infer_time_s}, f, indent=2)
+    log.info("Timing: train=%.1fs, infer=%.1fs", train_time_s, infer_time_s)
 
     # Print test summary per CDR
     print("\nTest results:")

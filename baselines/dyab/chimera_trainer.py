@@ -44,7 +44,7 @@ from chimera_utils import (
 
 # CHIMERA evaluation metrics
 sys.path.insert(0, os.path.join(_SCRIPT_DIR, "..", ".."))
-from evaluation.metrics import (
+from benchmark.evaluation.metrics import (
     aar as chimera_aar, kabsch_rmsd, tm_score as chimera_tm_score,
     count_liabilities,
 )
@@ -186,9 +186,11 @@ def build_config(cfg, shared, args):
 def _cdr_label(cdr):
     """Build a CDR label string from config cdr value."""
     if cdr is None:
-        return "all"
+        return "multicdrs"
     if isinstance(cdr, str):
         return cdr
+    if isinstance(cdr, list) and len(cdr) == 6:
+        return "multicdrs"
     return "+".join(cdr)
 
 
@@ -267,11 +269,11 @@ def get_cdr_ranges_in_concat(cplx, ag_len, hc_len, lc_len):
             continue
         start, end = cdr_pos
         if cdr_type.startswith("H"):
-            # Heavy chain: offset = ag_len + 1 (BOH token)
-            offset = ag_len + 1
+            # Heavy chain: offset = ag_len + 2 (BOA + ag + BOH)
+            offset = ag_len + 2
         else:
-            # Light chain: offset = ag_len + 1 (BOH) + hc_len + 1 (BOL)
-            offset = ag_len + 1 + hc_len + 1
+            # Light chain: offset = ag_len + 2 (BOA + ag + BOH) + hc_len + 1 (BOL)
+            offset = ag_len + hc_len + 3
         cdr_ranges[cdr_type] = (offset + start, offset + end + 1)  # end+1 for slice
     return cdr_ranges
 
@@ -286,7 +288,7 @@ def run_inference_with_metrics(model, dataset, loader, device, cdr, idx_to_cid):
         summary_by_cdr: dict {cdr_type: dict of mean metric values}
     """
     model.eval()
-    is_multi_cdr = cdr is None
+    is_multi_cdr = cdr is None or isinstance(cdr, list)
 
     if is_multi_cdr:
         predictions_by_cdr = {c: [] for c in CDR_TYPES}
@@ -541,6 +543,9 @@ def main():
     ).to(device)
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
 
+    # -- Timing --
+    train_t0 = time.time()
+
     # Test-only mode: load checkpoint and skip training
     if c.test_only:
         if c.checkpoint:
@@ -638,7 +643,10 @@ def main():
         print("Loading best model for test...")
         ckpt.load_best(model, device)
 
+    train_time_s = time.time() - train_t0
+
     # Test inference (runs for both training and test_only modes)
+    infer_t0 = time.time()
     predictions_by_cdr, test_metrics_by_cdr = run_inference_with_metrics(
         model, test_set, test_loader, device, c.cdr, idx_to_cid)
 
@@ -675,6 +683,13 @@ def main():
         print(f"\n  {cdr_type} ({n_preds} complexes):")
         for k, v in metrics.items():
             print(f"    {k}: {v['mean']:.4f} \u00b1 {v['std']:.4f}")
+
+    # Save timing
+    infer_time_s = time.time() - infer_t0
+    timing_path = os.path.join(save_dir, "timing.json")
+    with open(timing_path, "w") as f:
+        json.dump({"train_time_s": train_time_s, "infer_time_s": infer_time_s}, f, indent=2)
+    print(f"Timing: train={train_time_s:.1f}s, infer={infer_time_s:.1f}s")
 
     # Log test metrics to wandb (per-CDR + aggregated)
     if wandb_run:

@@ -4,7 +4,7 @@
 # Dataset
 dataset:
   split: epitope_group  # epitope_group | antigen_fold | temporal
-  cdr: null  # null = all CDRs; or list like [H1, H2, H3]
+  cdr: [H1, H2, H3, L1, L2, L3]  # all CDRs for multi-CDR generation
   paratope: [L3, H3]
 
 # CDR numbering scheme used by this baseline (chothia or imgt)

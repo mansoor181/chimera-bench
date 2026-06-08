@@ -65,9 +65,9 @@ ALL_CDR_LABELS = ["H1", "H2", "H3", "L1", "L2", "L3"]
 
 # Map from amino acid index to one-letter code
 AA_INDEX_TO_ONE = {
-    0: 'A', 1: 'R', 2: 'N', 3: 'D', 4: 'C', 5: 'Q', 6: 'E', 7: 'G',
-    8: 'H', 9: 'I', 10: 'L', 11: 'K', 12: 'M', 13: 'F', 14: 'P', 15: 'S',
-    16: 'T', 17: 'W', 18: 'Y', 19: 'V', 20: 'X', 21: '-',
+    0: 'A', 1: 'C', 2: 'D', 3: 'E', 4: 'F', 5: 'G', 6: 'H', 7: 'I',
+    8: 'K', 9: 'L', 10: 'M', 11: 'N', 12: 'P', 13: 'Q', 14: 'R', 15: 'S',
+    16: 'T', 17: 'V', 18: 'W', 19: 'Y', 20: 'X', 21: '-',
 }
 
 
@@ -452,6 +452,7 @@ def main():
     n_params = sum(p.numel() for p in model.parameters())
     log.info("Model parameters: %d", n_params)
 
+    train_t0 = time.time()
     if c.test_only:
         # Load checkpoint and skip to test
         ckpt_path = c.checkpoint
@@ -560,7 +561,10 @@ def main():
         else:
             log.info("No best checkpoint found, using current model state for test")
 
+    train_time_s = time.time() - train_t0
+
     # Test inference
+    infer_t0 = time.time()
     log.info("Running test inference...")
     all_predictions = run_test_inference(model, datasets["test"], device, c)
 
@@ -606,6 +610,13 @@ def main():
                         row[k] = ""
                 writer.writerow(row)
     log.info("Saved test metrics CSV to %s", csv_path)
+
+    # Save timing
+    infer_time_s = time.time() - infer_t0
+    timing_path = save_dir / "timing.json"
+    with open(timing_path, "w") as f:
+        json.dump({"train_time_s": train_time_s, "infer_time_s": infer_time_s}, f, indent=2)
+    log.info("Timing: train=%.1fs, infer=%.1fs", train_time_s, infer_time_s)
 
     # Print test summary per CDR
     print("\nTest results:")

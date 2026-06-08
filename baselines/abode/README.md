@@ -56,6 +56,31 @@ CHIMERA integration files for training and evaluating AbODE on the CHIMERA-Bench
 | `chimera_evaluate.py` | Run full CHIMERA metric suite (14 metrics + bootstrap CIs) |
 | `chimera_train.sh` | Train all 9 combinations (3 CDRs x 3 splits) |
 
+### Audit Fixes [05-28-2026]
+
+1. **Missing `numbering_scheme: imgt`** in `config.yaml`. AbODE uses IMGT-numbered data from
+   CHIMERA complex_features, but the config didn't declare this. Evaluation metrics could use
+   wrong CDR boundaries without it.
+
+2. **Missing `--test_only` and `--checkpoint` flags** in `chimera_trainer.py`. All other baselines
+   support these for re-running evaluation without retraining. Added to `parse_args()`,
+   `build_config()`, and `main()`.
+
+3. **CRITICAL: `_get_cartesian()` return value swap.** The function returns `(Cart_truth, Cart_pred)`
+   but `reconstruct_ca_coords()` unpacked as `Cart_pred, Cart_truth = ...`, swapping predicted and
+   ground truth coordinates.
+
+4. **CRITICAL: Native coord alignment never executed.** `load_native_cdr_coords()` returned
+   CDR-only CA coords (N residues) but AbODE predicts CDR + 1 flanking residue on each side
+   (N+2 residues). The length check `len(native) == len(pred)` always failed, falling back to
+   AbODE's broken local-frame reconstruction (~14A from PDB coords). Fixed by including flanking
+   residues in native coord extraction.
+
+5. **`--test_only` checkpoint key mismatch.** Used `state["model"]` but `ModelCheckpoint` saves
+   as `state["model_state_dict"]`. Fixed.
+
+These 3 coordinate bugs explain the previously reported RMSD=14.64A and DockQ=0.37.
+
 ### Usage
 
 ```bash

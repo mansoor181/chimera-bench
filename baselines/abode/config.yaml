@@ -6,6 +6,9 @@ dataset:
   split: epitope_group  # epitope_group | antigen_fold | temporal
   cdr_type: "3"  # 1 | 2 | 3
 
+# CDR numbering scheme used by this baseline
+numbering_scheme: imgt
+
 # Model (Adobe_cond hyperparameters)
 model:
   c_in: 30   # 1 time + 20 AA one-hot + 9 coordinate

@@ -53,7 +53,7 @@ from chimera_utils import (
 
 # CHIMERA evaluation metrics
 sys.path.insert(0, os.path.join(_SCRIPT_DIR, "..", ".."))
-from evaluation.metrics import (
+from benchmark.evaluation.metrics import (
     aar as chimera_aar, kabsch_rmsd, tm_score as chimera_tm_score,
     count_liabilities,
 )
@@ -79,6 +79,8 @@ def parse_args():
     parser.add_argument("--lr", type=float, default=None)
     parser.add_argument("--max_epoch", type=int, default=None)
     parser.add_argument("--no-wandb", action="store_true", help="Disable wandb logging")
+    parser.add_argument("--test_only", action="store_true", help="Skip training, run test only")
+    parser.add_argument("--checkpoint", type=str, default=None, help="Path to checkpoint for test_only")
     return parser.parse_args()
 
 
@@ -139,6 +141,8 @@ def build_config(cfg, shared, args):
         ns.max_epoch = args.max_epoch
     if not args.no_wandb:
         ns.use_wandb = True
+    ns.test_only = args.test_only
+    ns.checkpoint = args.checkpoint
 
     return ns
 
@@ -337,32 +341,126 @@ def decode_sequence(pred_tensor):
     return "".join(ALPHABET[t] for t in tags)
 
 
-def reconstruct_ca_coords(pred_tensor, gt_tensor, first_res):
+def kabsch_align(mobile, target):
+    """Kabsch alignment: align mobile to target, return aligned mobile + RMSD.
+
+    Args:
+        mobile: (N, 3) coordinates to align
+        target: (N, 3) reference coordinates
+
+    Returns:
+        aligned: (N, 3) aligned coordinates
+    """
+    centroid_m = mobile.mean(axis=0)
+    centroid_t = target.mean(axis=0)
+    m_centered = mobile - centroid_m
+    t_centered = target - centroid_t
+
+    H = m_centered.T @ t_centered
+    U, S, Vt = np.linalg.svd(H)
+    R = Vt.T @ U.T
+
+    # Handle reflection
+    if np.linalg.det(R) < 0:
+        Vt[-1, :] *= -1
+        R = Vt.T @ U.T
+
+    aligned = (mobile - centroid_m) @ R.T + centroid_t
+    return aligned
+
+
+def reconstruct_ca_coords(pred_tensor, gt_tensor, first_res, native_cdr_coords):
     """Reconstruct Cartesian CA coordinates from AbODE polar predictions.
 
-    Uses _get_cartesian() + cumulative sum from first_residue, following
-    evaluate_rmsd_with_sidechains_cond_angle().
+    AbODE's polar features (r_norm, mid_angle, normal_angle) are internal
+    coordinates (bond length, bond angle, dihedral-like angle). The original
+    _get_cartesian/_transform_to_cart code treats them as spherical (r, theta,
+    phi) with a 3.14/2 - phi substitution, producing a degenerate trajectory
+    that lives on a 2D plane in the local frame.
+
+    We reconstruct ca_pred in this AbODE local frame via the original
+    _get_cartesian + cumulative sum, then rigidly Kabsch-align to native PDB
+    CDR-only CA coords. ca_truth is the native PDB coords. This way:
+      - RMSD reflects how badly the (degenerate) AbODE reconstruction fits the
+        true 3D CDR shape (not an artifact of identical broken transforms on
+        both pred and truth).
+      - pred_coords are placed in the antigen's frame so downstream interface
+        metrics (Fnat, iRMSD, DockQ) are computed against the real antigen.
+
+    Caller must provide native_cdr_coords of length == ca_pred. AbODE's polar
+    features are CDR-only (ab_seq has +-1 flanking, but antibody_cdr_len =
+    len(ab_seq) - 2; see get_graph_data_polar_with_sidechains_angle).
     """
     pred_polar = pred_tensor[:, 20:29].cpu().detach()
     truth_polar = gt_tensor[:, 20:29].cpu().detach()
     first_residue_coord = first_res[:, 1, :].detach().numpy().reshape(-1, 3)
 
-    Cart_pred, Cart_truth = _get_cartesian(
+    # NOTE: _get_cartesian returns (Cart_truth, Cart_pred) -- truth first!
+    _, Cart_pred_local = _get_cartesian(
         pred_polar.view(-1, 9), truth_polar.view(-1, 9)
     )
 
-    ca_pred = Cart_pred[:, 3:6].numpy()
-    ca_truth = Cart_truth[:, 3:6].numpy()
+    ca_pred = Cart_pred_local[:, 3:6].numpy()
 
+    # Cumulative sum from first residue anchor (matches AbODE's
+    # evaluate_rmsd_with_sidechains_cond_angle)
     for i in range(len(ca_pred)):
         if i == 0:
             ca_pred[i] = ca_pred[i] + first_residue_coord
-            ca_truth[i] = ca_truth[i] + first_residue_coord
         else:
             ca_pred[i] = ca_pred[i] + ca_pred[i - 1]
-            ca_truth[i] = ca_truth[i] + ca_truth[i - 1]
 
+    if native_cdr_coords is None or len(native_cdr_coords) != len(ca_pred):
+        raise ValueError(
+            f"native_cdr_coords length {None if native_cdr_coords is None else len(native_cdr_coords)} "
+            f"does not match ca_pred length {len(ca_pred)}"
+        )
+
+    ca_pred = kabsch_align(ca_pred, native_cdr_coords)
+    ca_truth = native_cdr_coords.copy()
     return ca_pred, ca_truth
+
+
+def load_native_cdr_coords(cid, cdr_type, data_root):
+    """Load native CDR-only CA coordinates from complex_features.
+
+    AbODE's polar features are CDR-only (antibody_cdr_len = len(ab_seq) - 2
+    in get_graph_data_polar_with_sidechains_angle), so we return CDR-only
+    coords (no flanking) to match ca_pred length.
+
+    Args:
+        cid: complex_id string
+        cdr_type: CDR type string (e.g., "1", "2", "3")
+        data_root: CHIMERA data root path
+
+    Returns:
+        numpy array of shape (L, 3) or None if not found
+    """
+    feat_path = os.path.join(data_root, "processed", "complex_features", f"{cid}.pt")
+    if not os.path.exists(feat_path):
+        return None
+
+    feat = torch.load(feat_path, map_location="cpu", weights_only=False)
+
+    # Get CDR mask (H1=0, H2=1, H3=2 in IMGT mask)
+    cdr_idx = int(cdr_type) - 1  # Convert to 0-indexed
+    cdr_masks = feat.get("cdr_masks", {}).get("imgt", {})
+    heavy_mask = cdr_masks.get("heavy", [])
+
+    if not heavy_mask:
+        return None
+
+    cdr_indices = [i for i, v in enumerate(heavy_mask) if v == cdr_idx]
+    if len(cdr_indices) == 0:
+        return None
+
+    heavy_ca = feat.get("heavy_ca_coords")
+    if heavy_ca is None:
+        return None
+
+    heavy_ca = np.array(heavy_ca) if not isinstance(heavy_ca, np.ndarray) else heavy_ca
+
+    return heavy_ca[cdr_indices[0]:cdr_indices[-1] + 1]
 
 
 def run_inference_with_metrics(model, data_list, cid_list, device, c, cdr_type):
@@ -407,13 +505,12 @@ def run_inference_with_metrics(model, data_list, cid_list, device, c, cdr_type):
             # Decode true sequence
             true_seq = decode_sequence(y_gt)
 
-            # Reconstruct CA coordinates
-            try:
-                pred_ca, true_ca = reconstruct_ca_coords(
-                    final_pred, y_gt, batch.first_res)
-            except Exception:
-                pred_ca = np.zeros((len(pred_seq), 3))
-                true_ca = np.zeros((len(true_seq), 3))
+            # Load native CDR coords for alignment to PDB frame
+            native_cdr_coords = load_native_cdr_coords(cid, cdr_type, c.data_root)
+
+            # Reconstruct CA coordinates in native PDB frame (Kabsch-aligned)
+            pred_ca, true_ca = reconstruct_ca_coords(
+                final_pred, y_gt, batch.first_res, native_cdr_coords)
 
             # Compute PPL from cross-entropy
             pred_logits = final_pred[:, :20].detach().cpu()
@@ -523,38 +620,52 @@ def main():
     # WandB
     wandb_run = setup_wandb(c.wandb_project, run_name, vars(c), enabled=c.use_wandb)
 
-    # Training loop
-    for epoch in range(c.max_epoch):
-        t0 = time.time()
+    # -- Timing --
+    train_t0 = time.time()
 
-        train_loss = train_epoch(model, train_data, optimizer, device, c)
-        val_loss, val_aar, val_rmsd = evaluate_epoch(model, val_data, device, c)
+    if c.test_only:
+        # Skip training, load checkpoint directly
+        ckpt_path = c.checkpoint or os.path.join(save_dir, "checkpoints", "best.pt")
+        print(f"Test-only mode: loading checkpoint from {ckpt_path}")
+        state = torch.load(ckpt_path, map_location=device, weights_only=False)
+        model.load_state_dict(state["model_state_dict"])
+    else:
+        # Training loop
+        for epoch in range(c.max_epoch):
+            t0 = time.time()
 
-        elapsed = time.time() - t0
-        is_best = ckpt.save(model, optimizer, None, epoch, val_loss)
+            train_loss = train_epoch(model, train_data, optimizer, device, c)
+            val_loss, val_aar, val_rmsd = evaluate_epoch(model, val_data, device, c)
 
-        print(f"Epoch {epoch:3d} | train_loss={train_loss:.4f} "
-              f"val_loss={val_loss:.4f} val_aar={val_aar:.4f} "
-              f"val_rmsd={val_rmsd:.4f} {'*' if is_best else ''} [{elapsed:.0f}s]")
+            elapsed = time.time() - t0
+            is_best = ckpt.save(model, optimizer, None, epoch, val_loss)
 
-        log_dict = {
-            "epoch": epoch,
-            "train_loss": train_loss,
-            "val_loss": val_loss,
-            "val_aar": val_aar,
-            "val_rmsd": val_rmsd,
-        }
-        if wandb_run:
-            wandb_run.log(log_dict)
+            print(f"Epoch {epoch:3d} | train_loss={train_loss:.4f} "
+                  f"val_loss={val_loss:.4f} val_aar={val_aar:.4f} "
+                  f"val_rmsd={val_rmsd:.4f} {'*' if is_best else ''} [{elapsed:.0f}s]")
 
-        if early_stop(val_loss):
-            print(f"Early stopping at epoch {epoch}")
-            break
+            log_dict = {
+                "epoch": epoch,
+                "train_loss": train_loss,
+                "val_loss": val_loss,
+                "val_aar": val_aar,
+                "val_rmsd": val_rmsd,
+            }
+            if wandb_run:
+                wandb_run.log(log_dict)
 
-    # Test
-    print("Loading best model for test...")
-    ckpt.load_best(model, device)
+            if early_stop(val_loss):
+                print(f"Early stopping at epoch {epoch}")
+                break
 
+        # Load best model for test
+        print("Loading best model for test...")
+        ckpt.load_best(model, device)
+
+    train_time_s = time.time() - train_t0
+
+    # Test inference
+    infer_t0 = time.time()
     predictions, test_metrics = run_inference_with_metrics(
         model, test_data, test_cids, device, c, c.cdr_type)
 
@@ -570,6 +681,13 @@ def main():
     print(f"\nTest results ({len(predictions)} complexes, {cdr_label}):")
     for k, v in test_metrics.items():
         print(f"  {k}: {v:.4f}")
+
+    # Save timing
+    infer_time_s = time.time() - infer_t0
+    timing_path = os.path.join(save_dir, "timing.json")
+    with open(timing_path, "w") as f:
+        json.dump({"train_time_s": train_time_s, "infer_time_s": infer_time_s}, f, indent=2)
+    print(f"Timing: train={train_time_s:.1f}s, infer={infer_time_s:.1f}s")
 
     # Log test metrics to wandb
     if wandb_run:

@@ -2,7 +2,25 @@
 
 A benchmark dataset for **epitope-specific antibody design**.
 
+[![CI](https://github.com/mansoor181/chimera-bench/actions/workflows/ci.yml/badge.svg)](https://github.com/mansoor181/chimera-bench/actions/workflows/ci.yml)
+[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Data: CC BY 4.0](https://img.shields.io/badge/Data-CC%20BY%204.0-green.svg)](LICENSE-DATA)
+[![HuggingFace](https://img.shields.io/badge/%F0%9F%A4%97%20Dataset-HuggingFace-orange)](https://huggingface.co/datasets/mansoorbaloch/chimera-bench)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/mansoor181/chimera-bench/blob/main/notebooks/demo.ipynb)
+
 **Paper**: [CHIMERA-Bench: A Benchmark Dataset for Epitope-Specific Antibody Design](https://openreview.net/forum?id=PyZvVIJbSy) (ICLR 2026 GEM Workshop)
+
+```bash
+pip install -e .                 # install the chimera_bench package
+pytest tests/ -q                 # smoke-test against the committed sample (no download)
+```
+
+```python
+import chimera_bench as cb       # set CHIMERA_DATA_ROOT first
+split = cb.load_split("epitope_group")
+feat = cb.load_complex(split["test"][0])
+```
 
 ## Overview
 
@@ -24,12 +42,34 @@ CHIMERA-Bench provides:
 | Resolution cutoff | 4.0 A |
 | Contact cutoff | 4.5 A |
 
+## Leaderboard
+
+Primary task: **CDR-H3 design on the epitope-group split** (best-of-K, mean±std
+over the test set). Full results for all methods, splits, and CDR types are in
+[`leaderboard.csv`](leaderboard.csv). Regenerate with
+`python scripts/build_leaderboard.py --results results/`.
+
+| Rank | Method | AAR | CAAR | RMSD | Fnat | DockQ | Epitope F1 | CHIMERA-S | CHIMERA-B |
+|---:|---|---|---|---|---|---|---|---|---|
+| 1 | MEAN | 0.42±0.15 | 0.21±0.23 | 2.01±0.89 | 0.48±0.31 | 0.63±0.21 | 0.67±0.29 | 0.47±0.11 | 0.48±0.22 |
+| 2 | RAAD | 0.38±0.13 | 0.21±0.23 | 1.95±0.87 | 0.49±0.30 | 0.64±0.21 | 0.67±0.27 | 0.48±0.11 | 0.48±0.20 |
+| 3 | AbODE | 0.31±0.13 | 0.22±0.21 | 16.40±4.67 | 0.08±0.12 | 0.34±0.08 | 0.20±0.19 | 0.12±0.03 | 0.13±0.11 |
+| 4 | dyAb | 0.27±0.10 | 0.12±0.17 | 3.31±0.84 | 0.35±0.28 | 0.54±0.18 | 0.50±0.32 | 0.37±0.07 | 0.35±0.23 |
+| 5 | AbDockGen | 0.25±0.11 | 0.10±0.18 | 3.97±1.25 | 0.35±0.27 | 0.52±0.17 | 0.63±0.26 | 0.34±0.07 | 0.42±0.19 |
+| 6 | RefineGNN | 0.23±0.12 | 0.17±0.23 | 3.07±0.72 | 0.62±0.20 | 0.71±0.09 | 0.76±0.10 | 0.44±0.06 | 0.57±0.09 |
+| 7 | AbFlowNet | 0.22±0.12 | 0.13±0.18 | 2.70±1.24 | 0.49±0.33 | 0.57±0.22 | 0.55±0.28 | 0.41±0.11 | 0.42±0.22 |
+| 8 | AbMEGD | 0.22±0.11 | 0.11±0.18 | 2.76±1.26 | 0.50±0.32 | 0.57±0.22 | 0.56±0.27 | 0.41±0.11 | 0.43±0.21 |
+| 9 | DiffAb | 0.22±0.12 | 0.11±0.18 | 2.64±1.19 | 0.48±0.32 | 0.58±0.23 | 0.56±0.27 | 0.42±0.11 | 0.42±0.21 |
+| 10 | RADAb | 0.22±0.12 | 0.09±0.16 | 12.28±75.62 | 0.47±0.32 | 0.57±0.22 | 0.57±0.28 | 0.40±0.12 | 0.43±0.21 |
+
+To submit a method, see [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Dataset
 
 The dataset is hosted on HuggingFace Hub and Zenodo:
 
-- **HuggingFace**: [`chimera-bench/chimera-bench-v1.0`](https://huggingface.co/datasets/mansoorbaloch/chimera-bench)
-- **Zenodo**: [DOI: TBD](https://zenodo.org/)
+- **HuggingFace**: [`mansoorbaloch/chimera-bench`](https://huggingface.co/datasets/mansoorbaloch/chimera-bench)
+- **Zenodo**: [DOI: 20598827](https://zenodo.org/records/20598827)
 - **Pre-computed residue graphs** (optional, 5.8 GB): available as a separate download
 
 ### Download
@@ -39,10 +79,10 @@ The dataset is hosted on HuggingFace Hub and Zenodo:
 export CHIMERA_DATA_ROOT=/path/to/chimera-bench-v1.0
 
 # Option 1: HuggingFace CLI
-hf download chimera-bench/chimera-bench-v1.0 --local-dir $CHIMERA_DATA_ROOT
+hf download mansoorbaloch/chimera-bench --repo-type dataset --local-dir $CHIMERA_DATA_ROOT
 
 # Option 2: Direct download from Zenodo
-# wget <zenodo-url> -O chimera-bench-v1.0.zip && unzip chimera-bench-v1.0.zip
+# wget <20598827> -O chimera-bench-v1.0.zip && unzip chimera-bench-v1.0.zip
 ```
 
 ### Dataset Structure
@@ -83,11 +123,32 @@ Each `.pt` file contains:
 | `ag_surface_points` | (128, 3) | Sampled antigen surface points |
 | `ag_surface_chemical_feats` | (128, 6) | Hydropathy, charge, H-bond, aromaticity, polarity |
 
-See [`demo.ipynb`](demo.ipynb) for a complete walkthrough.
+See [`notebooks/demo.ipynb`](notebooks/demo.ipynb) for a complete walkthrough
+([open in Colab](https://colab.research.google.com/github/mansoor181/chimera-bench/blob/main/notebooks/demo.ipynb)).
 
 ## Installation
 
-The setup requires both conda (for bioinformatics tools) and pip (for PyTorch and ML packages), installed in a specific order to avoid conflicts.
+### Minimal (data loading + evaluation)
+
+The `chimera_bench` package only needs numpy, pandas, scipy, and PyTorch:
+
+```bash
+pip install -e .          # editable install of the chimera_bench package
+pip install -e ".[test]"  # also installs pytest for the test suite
+```
+
+This is enough to load the dataset, run evaluation, and reproduce the
+leaderboard. The smoke tests run against the committed `sample_data/`, so no
+dataset download is required:
+
+```bash
+pytest tests/ -q
+```
+
+### Full (rebuilding the dataset or training baselines)
+
+Rebuilding the dataset (`pipeline.py`) or training baselines needs conda tools
+(ANARCI) and ML packages, installed in a specific order to avoid conflicts.
 
 ### Setup script (recommended)
 
@@ -135,38 +196,56 @@ Each baseline may have additional dependencies (e.g., OpenMM, ESM-2 weights, MSA
 
 ## Quick Start
 
+Point the loaders at your dataset once, then use the `chimera_bench` API:
+
+```bash
+export CHIMERA_DATA_ROOT=/path/to/chimera-bench-v1.0
+# Or, to try the API with no download, point at the committed sample:
+# export CHIMERA_DATA_ROOT=$(pwd)/sample_data
+```
+
 ```python
-import torch, json
+import chimera_bench as cb
 
-# Load a split
-with open(f"{data_root}/splits/epitope_group.json") as f:
-    split = json.load(f)
-print(f"Train: {len(split['train'])}, Val: {len(split['val'])}, Test: {len(split['test'])}")
+# Splits and complexes
+split = cb.load_split("epitope_group")            # {"train", "val", "test"}
+feat = cb.load_complex(split["test"][0])          # per-complex feature dict
+print(feat["complex_id"], feat["heavy_sequence"][:20], "...")
+print("Epitope:", len(feat["epitope_residues"]), "residues")
 
-# Load a complex
-feat = torch.load(f"{data_root}/complex_features/{split['test'][0]}.pt", weights_only=False)
-print(feat['complex_id'], feat['heavy_sequence'][:20], "...")
-print(f"Epitope: {len(feat['epitope_residues'])} residues")
-print(f"CDR-H3 (IMGT): positions where cdr_masks['imgt']['heavy'] == 2")
+# CDR-H3 residue indices (IMGT) in the concatenated heavy+light chain
+h3_idx = cb.cdr_indices(feat, "H3", scheme="imgt")
+
+# A torch Dataset for training
+from torch.utils.data import DataLoader
+ds = cb.ChimeraDataset("epitope_group", "train")
+loader = DataLoader(ds, batch_size=1, collate_fn=lambda b: b)
+```
+
+Evaluate predictions (one `.pt` per complex, see [CONTRIBUTING.md](CONTRIBUTING.md)):
+
+```bash
+chimera-eval --predictions preds/ --split epitope_group --cdr-type H3
+# equivalently: python -m chimera_bench.evaluate --predictions preds/ ...
 ```
 
 ## Baselines
 
 11 methods retrained on CHIMERA-Bench across 6 paradigms:
 
-| Method | Paradigm | Epi-Cond? | Multi-CDR? | Directory |
-|--------|----------|:---------:|:----------:|-----------|
-| DiffAb | Diffusion | Yes | Yes | `baselines/diffab/` |
-| AbFlowNet | Flow matching | Yes | Yes | `baselines/abflownet/` |
-| AbMEGD | Diffusion | Yes | Yes | `baselines/abmedg/` |
-| RADAb | Retrieval + diffusion | Yes | Yes | `baselines/radab/` |
-| dyAb | Flow matching | Yes | Yes | `baselines/dyab/` |
-| MEAN | Equivariant GNN | Yes | No (H3) | `baselines/mean/` |
-| dyMEAN | Equivariant GNN | Yes | Yes | `baselines/dymean/` |
-| RAAD | Equivariant GNN | Yes | Yes | `baselines/raad/` |
-| RefineGNN | Autoregressive GNN | No | Yes | `baselines/refinegnn/` |
-| AbODE | Conjoined ODE | No | Yes | `baselines/abode/` |
-| AbDockGen | Hierarchical ENN | Yes (H3) | No | `baselines/abdockgen/` |
+| Method | Paradigm | Epi-Cond? | Multi-CDR? | Directory | Upstream |
+|--------|----------|:---------:|:----------:|-----------|----------|
+| DiffAb | Diffusion | Yes | Yes | `baselines/diffab/` | [luost26/diffab](https://github.com/luost26/diffab) |
+| AbFlowNet | Flow matching | Yes | Yes | `baselines/abflownet/` | [Patchwork53/abflownet](https://github.com/Patchwork53/abflownet) |
+| AbMEGD | Diffusion | Yes | Yes | `baselines/abmedg/` | [Patrick221215/AbMEGD](https://github.com/Patrick221215/AbMEGD) |
+| RADAb | Retrieval + diffusion | Yes | Yes | `baselines/radab/` | [GENTEL-lab/RADAb](https://github.com/GENTEL-lab/RADAb) |
+| dyAb | Flow matching | Yes | Yes | `baselines/dyab/` | [A4Bio/dyAb](https://github.com/A4Bio/dyAb) |
+| MEAN | Equivariant GNN | Yes | No (H3) | `baselines/mean/` | [THUNLP-MT/MEAN](https://github.com/THUNLP-MT/MEAN) |
+| dyMEAN | Equivariant GNN | Yes | Yes | `baselines/dymean/` | [THUNLP-MT/dyMEAN](https://github.com/THUNLP-MT/dyMEAN) |
+| RAAD | Equivariant GNN | Yes | Yes | `baselines/raad/` | [LirongWu/RAAD](https://github.com/LirongWu/RAAD) |
+| RefineGNN | Autoregressive GNN | No | Yes | `baselines/refinegnn/` | [wengong-jin/RefineGNN](https://github.com/wengong-jin/RefineGNN) |
+| AbODE | Conjoined ODE | No | Yes | `baselines/abode/` | [Aalto-QuML/AbODE](https://github.com/Aalto-QuML/AbODE) |
+| AbDockGen | Hierarchical ENN | Yes (H3) | No | `baselines/abdockgen/` | [wengong-jin/abdockgen](https://github.com/wengong-jin/abdockgen) |
 
 Each baseline includes 5 CHIMERA integration files:
 - `config.yaml` -- hyperparameters
@@ -202,191 +281,77 @@ python chimera_evaluate.py --aggregate
 | Epitope specificity | EpiF1 | Precision, recall, F1 for epitope contacts |
 | Designability | n_liabilities | Count of NG, DG, DS, DD, NS, NT, M motifs |
 
+Two composite scores summarize structure (CHIMERA-S) and binding (CHIMERA-B).
+Run the official evaluator with:
+
+```bash
+chimera-eval --predictions preds/ --split epitope_group --cdr-type H3 \
+    --output results/mymethod/epitope_group/H3/results.json
+```
+
+Notes:
+- Interface and epitope metrics are CDR-specific when `--cdr-type` is set: only
+  contacts where the antibody partner is a CDR residue are counted, since
+  framework contacts are trivially preserved and would dominate the scores.
+- TM-score uses a fast Kabsch-based approximation. For camera-ready numbers,
+  rescore with the official `TMscore` binary.
+- Prediction files load with `weights_only=False` (needed for numpy arrays);
+  only evaluate prediction files you trust. See [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Repository Structure
 
 ```
 chimera-bench/
   README.md                     # This file
-  LICENSE                       # MIT (code)
-  LICENSE-DATA                  # CC-BY 4.0 (data)
+  CONTRIBUTING.md               # How to submit a method / add a baseline
+  LICENSE / LICENSE-DATA        # MIT (code) / CC-BY 4.0 (data)
   DATASHEET.md                  # Datasheet for Datasets (Gebru et al.)
-  environment.yml               # Conda environment (base packages)
-  setup_env.sh                  # Full setup script (conda + pip)
-  requirements.txt              # Pip-only dependencies (for reference)
-  config.py                     # Central configuration
-  pipeline.py                   # Dataset construction pipeline
-  demo.ipynb                    # Dataset exploration notebook
-  analysis.ipynb                # Visualization and analysis
-  data/                         # Dataset construction modules
-    collect.py                  # SAbDab download
-    filter.py                   # Quality filtering
-    dedup.py                    # MMseqs2 deduplication
-    annotate.py                 # Numbering, CDR masks, contacts
-    features.py                 # Coordinate extraction, surface features
-    splits.py                   # Split generation
-    validate.py                 # Data validation
-    graphs.py                   # Residue graph construction
-  converters/                   # Format converters (5 categories)
-    sabdab_style.py             # Category A: DiffAb-family (11 methods)
-    refinegnn_jsonl.py          # Category B: RefineGNN
-    iggm_pdb_fasta.py           # Category C: IgGM, ProteinMPNN
-    absgm_6d.py                 # Category D: AbSGM
-    cdr_only.py                 # Category E: AbODE, AbDockGen
-  evaluation/                   # Evaluation framework
+  pyproject.toml                # Installable chimera_bench package
+  environment.yml / setup_env.sh / requirements.txt   # Full env setup
+  leaderboard.csv               # Published results (all methods/splits/CDRs)
+  sample_data/                  # 12-complex sample (demo + tests, no download)
+
+  chimera_bench/                # >>> Installable consumer package <<<
+    data.py                     # load_split, load_complex, ChimeraDataset, ...
     metrics.py                  # All 12 metrics
-    evaluate.py                 # Unified evaluation entry point
+    evaluate.py                 # Evaluation entry point (chimera-eval)
+
+  tests/                        # Smoke tests (run against sample_data)
+  scripts/
+    build_leaderboard.py        # Aggregate results/ into leaderboard.csv
+  notebooks/
+    demo.ipynb                  # Dataset exploration (Colab-ready)
+    analysis.ipynb              # Visualization and analysis
+    eda.ipynb                   # Exploratory data analysis
+
+  config.py                     # Construction config (dataset rebuild only)
+  pipeline.py                   # Dataset construction pipeline
+  data/                         # Construction modules (collect/filter/dedup/...)
+  converters/                   # Format converters (5 categories)
+  evaluation/
     contamination.py            # PLM training data overlap audit
   baselines/                    # 11 retrained baseline methods
     chimera_utils.py            # Shared utilities
     shared_config.yaml          # Shared paths and settings
-    diffab/                     # Each baseline has its own directory
-    ...
+    diffab/ ...                 # Each baseline has its own directory
 ```
+
+> The `chimera_bench/` package is the only thing installed by `pip install -e .`.
+> The construction modules (`config.py`, `pipeline.py`, `data/`, `converters/`)
+> use generic top-level names and are run from the repo root, kept separate so
+> they do not collide with the baselines' own `data/` and `evaluation/` packages.
 
 ## Splits
 
-| Split | Train | Val | Test | Generalization Axis |
+| Split | Train | Val | Test | Generalization axis |
 |-------|------:|----:|-----:|---------------------|
-| epitope_group | 2,338 | 292 | 292 | Unseen epitope patterns |
+| epitope_group | 2,338 | 292 | 292 | Unseen epitope patterns (primary) |
 | antigen_fold | 2,338 | 292 | 292 | Unseen antigen folds |
 | temporal | 2,337 | 292 | 293 | Prospective (by deposition date) |
 
-
-### Split 1: Epitope-Group (primary -- generalize to unseen epitopes)
-
-- Cluster epitopes by structural similarity (TM-align on epitope patches)
-- Test set contains epitope clusters never seen during training
-- **Tests**: Can the method generalize to novel binding sites?
-- This is the gold-standard split for epitope-specific design
-
-### Split 2: Antigen-Fold (structural generalization)
-
-- Cluster antigens by structural similarity using Foldseek (TM-score ≥ 0.5)
-- Test set contains antigen folds absent from training
-- **Tests**: Can the method handle novel antigen topologies?
-
-### Split 3: Temporal (realistic deployment scenario)
-
-- Train: structures deposited before 2022-01-01
-- Val: 2022-01-01 to 2023-06-01
-- Test: after 2023-06-01
-- **Tests**: Does the method work on genuinely new targets?
-
-### Split Statistics
-
-**Dataset Size**: 2922 antibody-antigen complexes (after filtering and deduplication)
-
-| Split | Train | Val | Test | Ratio |
-|-------|-------|-----|------|-------|
-| epitope_group | 2338 | 292 | 292 | 80/10/10 |
-| antigen_fold | 2338 | 292 | 292 | 80/10/10 |
-| temporal | 2337 | 292 | 293 | 80/10/10 |
-
-**Integrity Guarantees**:
-- No train/val/test overlap within any split (verified)
-- Clusters are never split across train and test (whole-cluster assignment)
-- Test sets differ across split types (~5-13% overlap between any two test sets)
-
-**Epitope-Group Clustering**:
-- Method: Kabsch RMSD on epitope CA coordinates with hierarchical clustering (average linkage)
-- Threshold: 3.0 A RMSD cutoff for cluster membership
-- Epitopes with different sizes use geometric hash (center of mass + spread) for distance
-- Complexes without valid epitope coordinates (< 3 residues) assigned to singleton clusters
-
-**Antigen-Fold Clustering (Foldseek)**:
-- Method: Foldseek easy-cluster with TM-score ≥ 0.5 threshold (same fold)
-- Coverage: 99.9% (2918/2922 complexes mapped to 810 structural fold clusters)
-- Parameters: bidirectional coverage ≥ 50%, greedy set cover clustering
-- Replaces CATH superfamily grouping which only covered ~30% of chains
-
-**Temporal Split Cutoffs**:
-- Train: 1990-08-27 to 2024-05-08
-- Val: 2024-05-08 to 2025-05-14
-- Test: 2025-05-14 to 2026-01-28 (most recent structures)
-- Complexes without parseable dates assigned to train
-
-### Detailed Per-Split Statistics
-
-#### Epitope-Group Split
-
-| Subset | n | CDR-H3 Length | Epitope Size | Antigen Size |
-|--------|---|---------------|--------------|--------------|
-| Train | 2338 | 14.4 ± 4.2 [3-63] | 16.4 ± 6.2 [0-64] | 265.5 ± 273.1 [3-2363] |
-| Val | 292 | 15.4 ± 4.3 [6-26] | 24.0 ± 6.6 [0-46] | 381.1 ± 278.4 [1-1853] |
-| Test | 292 | 15.5 ± 4.2 [4-28] | 24.0 ± 6.6 [1-62] | 379.2 ± 282.8 [1-1349] |
-
-CDR-H3 length distribution (Train/Val/Test):
-- Short (<10): 9.2% / 7.5% / 5.1%
-- Medium (10-15): 57.4% / 45.5% / 47.9%
-- Long (16-20): 24.1% / 33.6% / 33.9%
-- Very Long (>20): 9.2% / 13.4% / 13.0%
-
-Epitope size distribution (Train/Val/Test):
-- Small (<15): 38.8% / 5.1% / 5.1%
-- Medium (15-25): 54.8% / 59.6% / 53.4%
-- Large (>25): 6.4% / 35.3% / 41.4%
-
-Antigen size distribution (Train/Val/Test):
-- Small (<200): 57.2% / 34.2% / 33.6%
-- Medium (200-500): 30.9% / 46.9% / 48.3%
-- Large (>500): 11.8% / 18.8% / 18.2%
-
-#### Antigen-Fold Split
-
-| Subset | n | CDR-H3 Length | Epitope Size | Antigen Size |
-|--------|---|---------------|--------------|--------------|
-| Train | 2338 | 14.9 ± 4.3 [3-63] | 18.9 ± 6.5 [0-52] | 322.7 ± 278.5 [2-1190] |
-| Val | 292 | 13.2 ± 4.1 [4-24] | 14.5 ± 7.5 [1-64] | 147.1 ± 214.0 [1-1853] |
-| Test | 292 | 13.6 ± 4.0 [4-25] | 14.0 ± 7.4 [1-62] | 155.3 ± 248.6 [2-2363] |
-
-CDR-H3 length distribution (Train/Val/Test):
-- Short (<10): 6.7% / 19.2% / 13.7%
-- Medium (10-15): 55.4% / 54.1% / 55.8%
-- Long (16-20): 26.7% / 21.6% / 25.3%
-- Very Long (>20): 11.2% / 5.1% / 5.1%
-
-Epitope size distribution (Train/Val/Test):
-- Small (<15): 25.4% / 57.2% / 59.9%
-- Medium (15-25): 60.2% / 34.2% / 35.3%
-- Large (>25): 14.3% / 8.6% / 4.8%
-
-Antigen size distribution (Train/Val/Test):
-- Small (<200): 47.4% / 72.6% / 74.0%
-- Medium (200-500): 37.9% / 21.9% / 17.1%
-- Large (>500): 14.7% / 5.5% / 8.9%
-
-#### Temporal Split
-
-| Subset | n | CDR-H3 Length | Epitope Size | Antigen Size | Date Range |
-|--------|---|---------------|--------------|--------------|------------|
-| Train | 2337 | 14.5 ± 4.3 [3-63] | 17.7 ± 7.0 [0-64] | 283.2 ± 281.8 [1-1853] | 1990-08-27 to 2024-05-08 |
-| Val | 292 | 14.9 ± 4.1 [5-33] | 18.9 ± 6.9 [5-52] | 320.0 ± 276.7 [5-1349] | 2024-05-08 to 2025-05-14 |
-| Test | 293 | 15.1 ± 3.9 [6-26] | 19.1 ± 6.2 [1-34] | 299.0 ± 249.3 [2-2363] | 2025-05-14 to 2026-01-28 |
-
-CDR-H3 length distribution (Train/Val/Test):
-- Short (<10): 9.2% / 7.2% / 5.8%
-- Medium (10-15): 55.3% / 55.1% / 55.6%
-- Long (16-20): 25.8% / 25.7% / 28.3%
-- Very Long (>20): 9.7% / 12.0% / 10.2%
-
-Epitope size distribution (Train/Val/Test):
-- Small (<15): 33.8% / 27.1% / 23.5%
-- Medium (15-25): 54.2% / 58.6% / 59.0%
-- Large (>25): 12.0% / 14.4% / 17.4%
-
-Antigen size distribution (Train/Val/Test):
-- Small (<200): 54.3% / 45.5% / 46.1%
-- Medium (200-500): 32.6% / 39.0% / 42.3%
-- Large (>500): 13.1% / 15.4% / 11.6%
-
-### Stratified Analyses (within each split)
-
-These are not separate splits but diagnostic breakdowns reported for each split:
-
-- **By CDR-H3 length**: Short (<10), Medium (10-15), Long (16-20), Very Long (>20)
-- **By epitope size**: Small (<15 residues), Medium (15-25), Large (>25)
-- **By antigen size**: Small (<200 residues), Medium (200-500), Large (>500)
-- **Per-CDR**: H1, H2, H3, L1, L2, L3 reported separately
+Clusters are assigned whole to a single partition, so there is no train/val/test
+leakage within a split. See the [paper](https://openreview.net/forum?id=PyZvVIJbSy)
+for the clustering methodology and split rationale.
 
 
 ## Configuration

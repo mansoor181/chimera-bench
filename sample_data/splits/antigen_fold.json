@@ -1,0 +1,20 @@
+{
+  "train": [
+    "7v05_K_k_X",
+    "7u0p_D_I_B",
+    "7qti_I_J_D",
+    "7qti_F_E_A"
+  ],
+  "val": [
+    "8bcz_A_B_R",
+    "8s6m_H_L_R"
+  ],
+  "test": [
+    "7x1m_C_D_M",
+    "7nx8_A_B_E",
+    "7n3i_H_L_C",
+    "8hpf_M_N_A",
+    "7mzf_H_L_A",
+    "6vy6_H_L_A"
+  ]
+}
