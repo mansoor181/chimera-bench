@@ -9,7 +9,7 @@ A benchmark dataset for **epitope-specific antibody design**.
 [![HuggingFace](https://img.shields.io/badge/%F0%9F%A4%97%20Dataset-HuggingFace-orange)](https://huggingface.co/datasets/mansoorbaloch/chimera-bench)
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/mansoor181/chimera-bench/blob/main/notebooks/demo.ipynb)
 
-**Paper**: [CHIMERA-Bench: A Benchmark Dataset for Epitope-Specific Antibody Design](https://openreview.net/forum?id=PyZvVIJbSy) (ICLR 2026 GEM Workshop)
+**Paper**: [CHIMERA-Bench: A Benchmark Dataset for Epitope-Specific Antibody Design](https://arxiv.org/abs/2603.13431v3) (ICLR 2026 GEM Workshop - [openreview](https://openreview.net/forum?id=PyZvVIJbSy))
 
 ```bash
 pip install -e .                 # install the chimera_bench package
